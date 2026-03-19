@@ -346,7 +346,7 @@ export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | nu
   if (!a) return null;
 
   const handler = new ComposedHandler(t, ctx.targetModel, ctx.modelName, ctx.port, {
-    adapter: a,
+    formatAdapter: a,
     modelAdapter: resolveModelAdapter(ctx.modelName),
     ...ctx.sharedOpts,
   });
@@ -361,8 +361,8 @@ export function createOpenRouterHandler(
 ): ModelHandler {
   const ma = resolveModelAdapter(modelId);
   const transport = new OpenRouterProvider(apiKey);
-  const adapter = new OpenRouterAdapter(modelId, ma);
-  return new ComposedHandler(transport, modelId, modelId, port, { adapter, modelAdapter: ma, ...opts });
+  const fa = new OpenRouterAdapter(modelId, ma);
+  return new ComposedHandler(transport, modelId, modelId, port, { formatAdapter: fa, modelAdapter: ma, ...opts });
 }
 
 /** Create a handler for a resolved local provider. */
@@ -374,9 +374,9 @@ export function createLocalHandler(
   const transport = new LocalTransport(resolved.provider, resolved.modelName, {
     concurrency: resolved.concurrency,
   });
-  const adapter = new LocalModelAdapter(resolved.modelName, resolved.provider.name, ma);
+  const fa = new LocalModelAdapter(resolved.modelName, resolved.provider.name, ma);
   return new ComposedHandler(transport, resolved.modelName, resolved.modelName, port, {
-    adapter, modelAdapter: ma, tokenStrategy: "local", ...opts,
+    formatAdapter: fa, modelAdapter: ma, tokenStrategy: "local", ...opts,
   });
 }
 
@@ -388,9 +388,9 @@ export function createUrlLocalHandler(
   const ma = resolveModelAdapter(urlParsed.modelName);
   const providerConfig = createUrlProvider(urlParsed);
   const transport = new LocalTransport(providerConfig, urlParsed.modelName);
-  const adapter = new LocalModelAdapter(urlParsed.modelName, providerConfig.name, ma);
+  const fa = new LocalModelAdapter(urlParsed.modelName, providerConfig.name, ma);
   return new ComposedHandler(transport, urlParsed.modelName, urlParsed.modelName, port, {
-    adapter, modelAdapter: ma, tokenStrategy: "local", ...opts,
+    formatAdapter: fa, modelAdapter: ma, tokenStrategy: "local", ...opts,
   });
 }
 

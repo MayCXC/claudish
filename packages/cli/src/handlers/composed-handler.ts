@@ -46,9 +46,9 @@ function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
 }
 
 export interface ComposedHandlerOptions {
-  /** Override adapter selection — use this specific adapter instance */
-  adapter?: BaseModelAdapter;
-  /** Model-specific adapter (GLM, Grok, etc.) injected by the registry */
+  /** Format adapter (Layer 1): wire format translation (messages, tools, payload) */
+  formatAdapter?: BaseModelAdapter;
+  /** Model adapter (Layer 2): model-specific quirks (context window, vision, prepareRequest) */
   modelAdapter?: BaseModelAdapter;
   /** Tool schemas for validation (enables buffered tool call validation) */
   toolSchemas?: any[];
@@ -66,10 +66,9 @@ export interface ComposedHandlerOptions {
 
 export class ComposedHandler implements ModelHandler {
   private provider: ProviderTransport;
-  private explicitAdapter?: BaseModelAdapter;
-  /** Model-specific adapter (GLM, Grok, etc.) — handles model quirks independent of provider */
+  private formatAdapter?: BaseModelAdapter;
   private modelAdapter?: BaseModelAdapter;
-  /** Resolved model adapter (explicit or auto-selected) cached for getAdapter() */
+  /** Effective adapter: formatAdapter wins, then modelAdapter, then DefaultAdapter */
   private resolvedAdapter: BaseModelAdapter;
   private middlewareManager: MiddlewareManager;
   private tokenTracker: TokenTracker;
@@ -89,17 +88,16 @@ export class ComposedHandler implements ModelHandler {
     this.provider = provider;
     this.targetModel = targetModel;
     this.options = options;
-    this.explicitAdapter = options.adapter;
+    this.formatAdapter = options.formatAdapter;
     this.isInteractive = options.isInteractive ?? false;
 
-    // Model-specific adapter (GLM, Grok, DeepSeek, etc.) injected by caller
-    const injectedModelAdapter = options.modelAdapter;
-    if (injectedModelAdapter && injectedModelAdapter.getName() !== "DefaultAdapter") {
-      this.modelAdapter = injectedModelAdapter;
+    // Model adapter (GLM, Grok, DeepSeek, etc.) injected by caller
+    const ma = options.modelAdapter;
+    if (ma && ma.getName() !== "DefaultAdapter") {
+      this.modelAdapter = ma;
     }
 
-    // Effective adapter: explicit format adapter wins, then model adapter, then default
-    this.resolvedAdapter = this.explicitAdapter || injectedModelAdapter || new DefaultAdapter(targetModel);
+    this.resolvedAdapter = this.formatAdapter || ma || new DefaultAdapter(targetModel);
 
     // Initialize middleware (only register model-specific middleware when applicable)
     this.middlewareManager = new MiddlewareManager();
@@ -119,26 +117,25 @@ export class ComposedHandler implements ModelHandler {
     });
   }
 
-  /** Provider adapter — handles transport format (messages, tools, payload) */
-  private getAdapter(): BaseModelAdapter {
+  /** Effective format adapter for message/tool/payload conversion */
+  private getFormatAdapter(): BaseModelAdapter {
     return this.resolvedAdapter;
   }
 
-  /** Model context window — model adapter wins over provider adapter */
+  /** Model context window — model adapter wins over format adapter */
   private getModelContextWindow(): number {
-    return this.modelAdapter?.getContextWindow() ?? this.getAdapter().getContextWindow();
+    return this.modelAdapter?.getContextWindow() ?? this.getFormatAdapter().getContextWindow();
   }
 
-  /** Model vision support — model adapter wins over provider adapter */
+  /** Model vision support — model adapter wins over format adapter */
   private getModelSupportsVision(): boolean {
-    return this.modelAdapter?.supportsVision() ?? this.getAdapter().supportsVision();
+    return this.modelAdapter?.supportsVision() ?? this.getFormatAdapter().supportsVision();
   }
 
   /** Get the active adapter name for stats reporting. */
   private getActiveAdapterName(): string {
-    // Model-specific adapter takes precedence (GLMAdapter, GrokAdapter, etc.)
     if (this.modelAdapter) return this.modelAdapter.getName();
-    return this.getAdapter().getName();
+    return this.getFormatAdapter().getName();
   }
 
   async handle(c: Context, payload: any): Promise<Response> {
@@ -154,7 +151,7 @@ export class ComposedHandler implements ModelHandler {
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(payload);
 
     // 2. Get adapter and reset state
-    const adapter = this.getAdapter();
+    const adapter = this.getFormatAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
 
     // 3. Convert messages and tools
@@ -631,7 +628,7 @@ export class ComposedHandler implements ModelHandler {
     const streamFormat =
       this.provider.overrideStreamFormat?.() ??
       this.modelAdapter?.getStreamFormat() ??
-      this.getAdapter().getStreamFormat();
+      this.getFormatAdapter().getStreamFormat();
     switch (streamFormat) {
       case "openai-sse":
         return createStreamingResponseHandler(
