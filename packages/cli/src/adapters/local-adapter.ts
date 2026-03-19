@@ -12,7 +12,7 @@
  */
 
 import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
-import { AdapterManager } from "./adapter-manager.js";
+import { resolveModelAdapter } from "./adapter-manager.js";
 import { log } from "../logger.js";
 
 interface SamplingParams {
@@ -31,8 +31,7 @@ export class LocalModelAdapter extends BaseModelAdapter {
     super(modelId);
     this.providerName = providerName;
 
-    const manager = new AdapterManager(modelId);
-    this.innerAdapter = manager.getAdapter();
+    this.innerAdapter = resolveModelAdapter(modelId);
   }
 
   // ─── Text processing delegates to inner adapter ───────────────────

@@ -3,15 +3,15 @@
  *
  * Validates:
  * 1. GLMAdapter model detection, context windows, and vision support
- * 2. AdapterManager correctly selects GLMAdapter for GLM models
- * 3. ComposedHandler two-layer architecture — model adapter provides model-specific
+ * 2. resolveModelAdapter correctly selects GLMAdapter for GLM models
+ * 3. ComposedHandler two-layer architecture: model adapter provides model-specific
  *    overrides (context window, vision, prepareRequest) even when a provider adapter
  *    (LiteLLMAdapter, OpenRouterAdapter) is set as the explicit adapter
  */
 
 import { describe, test, expect } from "bun:test";
 import { GLMAdapter } from "./adapters/glm-adapter.js";
-import { AdapterManager } from "./adapters/adapter-manager.js";
+import { resolveModelAdapter } from "./adapters/adapter-manager.js";
 import { LiteLLMAdapter } from "./adapters/litellm-adapter.js";
 import { DefaultAdapter } from "./adapters/base-adapter.js";
 
@@ -134,50 +134,39 @@ describe("GLMAdapter — processTextContent", () => {
   });
 });
 
-// ─── Group 2: AdapterManager selects GLMAdapter ──────────────────────────────
+// ─── Group 2: resolveModelAdapter selects GLMAdapter ──────────────────────────
 
-describe("AdapterManager — GLM routing", () => {
+describe("resolveModelAdapter — GLM routing", () => {
   test("selects GLMAdapter for glm-5", () => {
-    const manager = new AdapterManager("glm-5");
-    const adapter = manager.getAdapter();
-
-    expect(adapter.getName()).toBe("GLMAdapter");
+    expect(resolveModelAdapter("glm-5").getName()).toBe("GLMAdapter");
   });
 
   test("selects GLMAdapter for glm-4-long", () => {
-    const manager = new AdapterManager("glm-4-long");
-    const adapter = manager.getAdapter();
-
-    expect(adapter.getName()).toBe("GLMAdapter");
+    expect(resolveModelAdapter("glm-4-long").getName()).toBe("GLMAdapter");
   });
 
   test("does NOT select GLMAdapter for gpt-4o", () => {
-    const manager = new AdapterManager("gpt-4o");
-    const adapter = manager.getAdapter();
-
-    expect(adapter.getName()).not.toBe("GLMAdapter");
+    expect(resolveModelAdapter("gpt-4o").getName()).not.toBe("GLMAdapter");
   });
 
-  test("needsTransformation returns true for GLM models", () => {
-    const manager = new AdapterManager("glm-5");
-    expect(manager.needsTransformation()).toBe(true);
+  test("GLM model resolves to non-default adapter", () => {
+    expect(resolveModelAdapter("glm-5").getName()).not.toBe("DefaultAdapter");
   });
 });
 
 // ─── Group 3: Two-layer adapter architecture ─────────────────────────────────
 //
 // When a provider adapter (LiteLLMAdapter) is the explicit adapter, the model
-// adapter (GLMAdapter) should still be resolved by AdapterManager for model-
+// adapter (GLMAdapter) should still be resolved by resolveModelAdapter for model-
 // specific concerns.
 
 describe("Two-layer adapter — model adapter overrides provider adapter", () => {
-  test("AdapterManager resolves GLMAdapter even when LiteLLMAdapter would be used", () => {
+  test("resolveModelAdapter returns GLMAdapter even when LiteLLMAdapter would be used", () => {
     // Simulate what ComposedHandler does:
     // 1. Explicit adapter = LiteLLMAdapter (provider transport)
-    // 2. AdapterManager.getAdapter() = GLMAdapter (model quirks)
+    // 2. resolveModelAdapter() = GLMAdapter (model quirks)
     const litellmAdapter = new LiteLLMAdapter("glm-5", "https://example.com");
-    const adapterManager = new AdapterManager("glm-5");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelAdapter("glm-5");
 
     // Provider adapter handles transport
     expect(litellmAdapter.getName()).toBe("LiteLLMAdapter");
@@ -196,24 +185,21 @@ describe("Two-layer adapter — model adapter overrides provider adapter", () =>
   });
 
   test("model adapter provides correct context window for glm-4-long via LiteLLM", () => {
-    const adapterManager = new AdapterManager("glm-4-long");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelAdapter("glm-4-long");
 
     expect(modelAdapter.getName()).toBe("GLMAdapter");
     expect(modelAdapter.getContextWindow()).toBe(1_000_000);
   });
 
   test("model adapter correctly reports no vision for glm-4-flash via LiteLLM", () => {
-    const adapterManager = new AdapterManager("glm-4-flash");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelAdapter("glm-4-flash");
 
     expect(modelAdapter.getName()).toBe("GLMAdapter");
     expect(modelAdapter.supportsVision()).toBe(false);
   });
 
   test("non-GLM model via LiteLLM falls back to DefaultAdapter", () => {
-    const adapterManager = new AdapterManager("some-unknown-model");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelAdapter("some-unknown-model");
 
     // Should be DefaultAdapter, not GLMAdapter
     expect(modelAdapter.getName()).toBe("DefaultAdapter");
@@ -221,8 +207,7 @@ describe("Two-layer adapter — model adapter overrides provider adapter", () =>
 
   test("model adapter strips thinking, provider adapter does not", () => {
     const litellmAdapter = new LiteLLMAdapter("glm-5", "https://example.com");
-    const adapterManager = new AdapterManager("glm-5");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelAdapter("glm-5");
 
     // Provider adapter does not strip thinking (no override)
     const request1 = { model: "glm-5", thinking: { budget: 10000 }, messages: [] };

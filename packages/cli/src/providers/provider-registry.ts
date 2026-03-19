@@ -8,8 +8,8 @@
  * Legacy syntax: prefix/model or prefix:model (with deprecation warnings)
  */
 
-import { parseModelSpec, isLocalProviderName, type ParsedModel } from "./model-parser.js";
-import { BUILTIN_PROVIDERS } from "./provider-definitions.js";
+import { parseModelSpec, type ParsedModel } from "./model-parser.js";
+import { isLocalProviderName, BUILTIN_PROVIDERS, getProviderByName, type ProviderDefinition } from "./provider-definitions.js";
 
 export interface LocalProvider {
   name: string;
@@ -231,20 +231,13 @@ import { log, logStderr } from "../logger.js";
 
 export type { ProfileContext, ProviderProfile };
 
-/** Resolve effective transport type from definition, handling zen minimax redirect. */
-function resolveTransport(def: ProviderDefinition, modelName: string): string | undefined {
-  if (!def.transport) return undefined;
-  if (def.transport === "opencode-zen") {
-    return modelName.toLowerCase().includes("minimax") ? "anthropic" : "openai";
-  }
-  return def.transport;
-}
-
-/** Construct the transport for a given transport type. */
-function resolveProviderTransport(
-  transport: string, provider: RemoteProvider, modelName: string, apiKey: string,
+/** Resolve transport instance from definition. */
+function resolveTransport(
+  def: ProviderDefinition, provider: RemoteProvider, modelName: string, apiKey: string,
 ): ProviderTransport | null {
-  switch (transport) {
+  if (!def.transport) return null;
+
+  switch (def.transport) {
     case "gemini":       return new GeminiApiKeyProvider(provider, modelName, apiKey);
     case "gemini-oauth": return new GeminiCodeAssistProvider(modelName);
     case "openai":       return new OpenAIProvider(provider, modelName, apiKey);
@@ -268,11 +261,13 @@ function resolveProviderTransport(
   }
 }
 
-/** Construct the format adapter for a given transport type. */
+/** Construct the format adapter for a given definition. */
 function resolveFormatAdapter(
-  transport: string, provider: RemoteProvider, modelName: string,
+  def: ProviderDefinition, provider: RemoteProvider, modelName: string,
 ): BaseModelAdapter | null {
-  switch (transport) {
+  if (!def.transport) return null;
+
+  switch (def.transport) {
     case "gemini":
     case "gemini-oauth":  return new GeminiAdapter(modelName);
     case "openai":        return new OpenAIAdapter(modelName);
@@ -295,24 +290,31 @@ function resolveFormatAdapter(
  * Constructs transport + adapter from the definition's transport field.
  */
 export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | null {
-  const def = getProviderByName(ctx.provider.name);
+  let def = getProviderByName(ctx.provider.name);
   if (!def?.transport) return null;
 
-  const transport = resolveTransport(def, ctx.modelName);
-  if (!transport) return null;
+  // Zen minimax models swap to dedicated minimax definitions (anthropic transport + /v1/messages)
+  if (def.name === "opencode-zen" && ctx.modelName.toLowerCase().includes("minimax")) {
+    def = getProviderByName("opencode-zen-minimax")!;
+  } else if (def.name === "opencode-zen-go" && ctx.modelName.toLowerCase().includes("minimax")) {
+    def = getProviderByName("opencode-zen-go-minimax")!;
+  }
 
   const apiKey = ctx.apiKey || (def.name.startsWith("opencode-zen") ? "public" : "");
-  const t = resolveProviderTransport(transport, ctx.provider, ctx.modelName, apiKey);
+
+  // Build provider with swapped definition's baseUrl/apiPath
+  const provider: RemoteProvider = { ...ctx.provider, baseUrl: def.baseUrl, apiPath: def.apiPath };
+  const t = resolveTransport(def, provider, ctx.modelName, apiKey);
   if (!t) return null;
 
-  const a = resolveFormatAdapter(transport, ctx.provider, ctx.modelName);
+  const a = resolveFormatAdapter(def, provider, ctx.modelName);
   if (!a) return null;
 
   const handler = new ComposedHandler(t, ctx.targetModel, ctx.modelName, ctx.port, {
     adapter: a,
     ...ctx.sharedOpts,
   });
-  log(`[Proxy] Created ${def.displayName} handler (${transport}): ${ctx.modelName}`);
+  log(`[Proxy] Created ${def.displayName} handler (${def.transport}): ${ctx.modelName}`);
   return handler;
 }
 

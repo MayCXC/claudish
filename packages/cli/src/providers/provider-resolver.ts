@@ -91,7 +91,7 @@ export interface ProviderResolution {
 /**
  * Local provider prefixes that never require an API key
  */
-// LOCAL_PREFIXES derived from provider-definitions.ts
+// getLocalPrefixes() derived from provider-definitions.ts
 
 /**
  * Display names for providers (for proper capitalization)
@@ -158,7 +158,7 @@ function isApiKeyAvailable(info: ApiKeyInfo): boolean {
 export function resolveModelProvider(modelId: string | undefined): ProviderResolution {
   // Default case: no model specified = OpenRouter with undefined model (will use default)
   if (!modelId) {
-    const info = API_KEY_INFO.openrouter;
+    const info = API_KEY_INFO["openrouter"];
     return {
       category: "openrouter",
       providerName: "OpenRouter",
@@ -244,7 +244,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
 
   // 4. Check for explicit OpenRouter routing
   if (parsed.provider === "openrouter") {
-    const info = API_KEY_INFO.openrouter;
+    const info = API_KEY_INFO["openrouter"];
     return addCommonFields({
       category: "openrouter",
       providerName: "OpenRouter",
@@ -264,7 +264,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
 
     if (autoResult) {
       if (autoResult.provider === "litellm") {
-        const info = API_KEY_INFO.litellm;
+        const info = API_KEY_INFO["litellm"];
         return addCommonFields({
           category: "direct-api",
           providerName: "LiteLLM",
@@ -280,7 +280,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       }
 
       if (autoResult.provider === "openrouter") {
-        const info = API_KEY_INFO.openrouter;
+        const info = API_KEY_INFO["openrouter"];
         return addCommonFields({
           category: "openrouter",
           providerName: "OpenRouter",

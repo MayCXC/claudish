@@ -1357,41 +1357,40 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
       const resolvedSpec = resolveRemoteProvider(firstReadyRoute.modelSpec);
       const modelName = resolvedSpec?.modelName || parsed.model;
 
-      // Determine format adapter from provider name (mirrors provider-profiles.ts)
+      // Determine effective provider for zen minimax swaps
+      let effectiveProvider = providerName;
+      const isMinimaxModel = modelName.toLowerCase().includes("minimax");
+      if (providerName === "opencode-zen" && isMinimaxModel) {
+        effectiveProvider = "opencode-zen-minimax";
+      } else if (providerName === "opencode-zen-go" && isMinimaxModel) {
+        effectiveProvider = "opencode-zen-go-minimax";
+      }
+
+      // Determine format adapter from provider definition's transport field
+      const { getProviderByName } = await import("./providers/provider-definitions.js");
+      const probeDef = getProviderByName(effectiveProvider);
+      const probeTransport = probeDef?.transport || "openai";
+
       let formatAdapterName = "OpenAIAdapter";
       let declaredStreamFormat = "openai-sse";
 
-      const anthropicCompatProviders = ["minimax", "minimax-coding", "kimi", "kimi-coding", "zai"];
-      const isMinimaxModel = modelName.toLowerCase().includes("minimax");
-
-      if (anthropicCompatProviders.includes(providerName)) {
+      if (probeTransport === "anthropic") {
         formatAdapterName = "AnthropicPassthroughAdapter";
         declaredStreamFormat = "anthropic-sse";
-      } else if (
-        (providerName === "opencode-zen" || providerName === "opencode-zen-go") &&
-        isMinimaxModel
-      ) {
-        formatAdapterName = "AnthropicPassthroughAdapter";
-        declaredStreamFormat = "anthropic-sse";
-      } else if (providerName === "gemini" || providerName === "gemini-codeassist") {
+      } else if (probeTransport === "gemini" || probeTransport === "gemini-oauth") {
         formatAdapterName = "GeminiAdapter";
         declaredStreamFormat = "gemini-sse";
-      } else if (providerName === "ollamacloud") {
+      } else if (probeTransport === "ollamacloud") {
         formatAdapterName = "OllamaCloudAdapter";
         declaredStreamFormat = "openai-sse";
-      } else if (providerName === "litellm") {
+      } else if (probeTransport === "litellm") {
         formatAdapterName = "LiteLLMAdapter";
-        declaredStreamFormat = "openai-sse";
-      } else {
-        // openai, glm, glm-coding, opencode-zen (non-minimax), opencode-zen-go (non-minimax)
-        formatAdapterName = "OpenAIAdapter";
         declaredStreamFormat = "openai-sse";
       }
 
-      // Get model translator via AdapterManager
-      const { AdapterManager } = await import("./adapters/adapter-manager.js");
-      const adapterManager = new AdapterManager(modelName);
-      const modelTranslator = adapterManager.getAdapter();
+      // Get model translator via resolveModelAdapter
+      const { resolveModelAdapter } = await import("./adapters/adapter-manager.js");
+      const modelTranslator = resolveModelAdapter(modelName);
       const modelTranslatorName = modelTranslator.getName();
 
       // Transport overrides (aggregators that normalize responses to openai-sse)

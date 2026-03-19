@@ -452,15 +452,15 @@ describe("Model Adapter Quirks", () => {
     expect(request.thinking).toBeUndefined();
   });
 
-  test("AdapterManager selects correct adapter for model IDs", async () => {
-    const { AdapterManager } = await import("./adapters/adapter-manager.js");
+  test("resolveModelAdapter selects correct adapter for model IDs", async () => {
+    const { resolveModelAdapter } = await import("./adapters/adapter-manager.js");
 
-    expect(new AdapterManager("glm-5").getAdapter().getName()).toBe("GLMAdapter");
-    expect(new AdapterManager("grok-3").getAdapter().getName()).toBe("GrokAdapter");
-    expect(new AdapterManager("minimax-m2.5").getAdapter().getName()).toBe("MiniMaxAdapter");
-    expect(new AdapterManager("qwen3.5-plus").getAdapter().getName()).toBe("QwenAdapter");
-    expect(new AdapterManager("deepseek-r1").getAdapter().getName()).toBe("DeepSeekAdapter");
-    expect(new AdapterManager("unknown-model").getAdapter().getName()).toBe("DefaultAdapter");
+    expect(resolveModelAdapter("glm-5").getName()).toBe("GLMAdapter");
+    expect(resolveModelAdapter("grok-3").getName()).toBe("GrokAdapter");
+    expect(resolveModelAdapter("minimax-m2.5").getName()).toBe("MiniMaxAdapter");
+    expect(resolveModelAdapter("qwen3.5-plus").getName()).toBe("QwenAdapter");
+    expect(resolveModelAdapter("deepseek-r1").getName()).toBe("DeepSeekAdapter");
+    expect(resolveModelAdapter("unknown-model").getName()).toBe("DefaultAdapter");
   });
 });
 
@@ -530,9 +530,9 @@ describe("CodexAdapter", () => {
     expect(new CodexAdapter("codex-mini").getName()).toBe("CodexAdapter");
   });
 
-  test("AdapterManager selects CodexAdapter for codex-mini", async () => {
-    const { AdapterManager } = await import("./adapters/adapter-manager.js");
-    expect(new AdapterManager("codex-mini").getAdapter().getName()).toBe("CodexAdapter");
+  test("resolveModelAdapter selects CodexAdapter for codex-mini", async () => {
+    const { resolveModelAdapter } = await import("./adapters/adapter-manager.js");
+    expect(resolveModelAdapter("codex-mini").getName()).toBe("CodexAdapter");
   });
 });
 

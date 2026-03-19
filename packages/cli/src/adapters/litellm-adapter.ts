@@ -37,7 +37,7 @@ export class LiteLLMAdapter extends DefaultAdapter {
   }
 
   shouldHandle(modelId: string): boolean {
-    return false; // Always used explicitly, not via AdapterManager matching
+    return false; // Always used explicitly, not via resolveModelAdapter
   }
 
   supportsVision(): boolean {

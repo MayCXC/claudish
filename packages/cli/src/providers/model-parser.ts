@@ -66,11 +66,15 @@ export interface ParsedModel {
  */
 import {
   PROVIDER_SHORTCUTS,
-  DIRECT_API_PROVIDERS,
   LOCAL_PROVIDERS,
-  NATIVE_MODEL_PATTERNS,
   LEGACY_PREFIX_PATTERNS,
+  NATIVE_MODEL_PATTERNS,
+  isLocalProviderName,
+  isDirectApiProvider,
 } from "./provider-definitions.js";
+
+// Re-export from provider-definitions
+export { isLocalProviderName, isDirectApiProvider } from "./provider-definitions.js";
 
 /**
  * Parse a model specification string
@@ -132,7 +136,7 @@ export function parseModelSpec(modelSpec: string): ParsedModel {
       // Check for concurrency suffix on local providers
       let concurrency: number | undefined;
       let modelName = model;
-      if (LOCAL_PROVIDERS.has(provider)) {
+      if (isLocalProviderName(provider)) {
         const concurrencyMatch = model.match(/^(.+):(\d+)$/);
         if (concurrencyMatch) {
           modelName = concurrencyMatch[1];
@@ -190,8 +194,7 @@ export function parseModelSpec(modelSpec: string): ParsedModel {
   };
 }
 
-// Re-export from provider-definitions
-export { isLocalProviderName, isDirectApiProvider } from "./provider-definitions.js";
+
 
 /**
  * Get deprecation warning for legacy syntax

@@ -43,7 +43,7 @@ export interface ProviderDefinition {
   headers?: Record<string, string>;
   /** Transport type for handler construction. Determines which transport class
    *  and format adapter to use. Model adapter is selected independently by model name. */
-  transport?: "gemini" | "gemini-oauth" | "openai" | "anthropic" | "ollamacloud" | "litellm" | "vertex" | "opencode-zen";
+  transport?: "gemini" | "gemini-oauth" | "openai" | "anthropic" | "ollamacloud" | "litellm" | "vertex";
 }
 
 export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
@@ -240,7 +240,19 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyEnvVar: "OPENCODE_API_KEY",
     apiKeyDescription: "OpenCode Zen (Free)",
     apiKeyUrl: "https://opencode.ai/",
-    transport: "opencode-zen",
+    transport: "openai",
+    type: "remote",
+    directApi: true,
+  },
+  {
+    name: "opencode-zen-minimax",
+    displayName: "OpenCode Zen (MiniMax)",
+    shortcuts: [],
+    legacyPrefixes: [],
+    baseUrl: process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen",
+    apiPath: "/v1/messages",
+    apiKeyEnvVar: "OPENCODE_API_KEY",
+    transport: "anthropic",
     type: "remote",
     directApi: true,
   },
@@ -254,7 +266,21 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       : "https://opencode.ai/zen/go",
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENCODE_API_KEY",
-    transport: "opencode-zen",
+    transport: "openai",
+    type: "remote",
+    directApi: true,
+  },
+  {
+    name: "opencode-zen-go-minimax",
+    displayName: "OpenCode Zen Go (MiniMax)",
+    shortcuts: [],
+    legacyPrefixes: [],
+    baseUrl: process.env.OPENCODE_BASE_URL
+      ? process.env.OPENCODE_BASE_URL.replace("/zen", "/zen/go")
+      : "https://opencode.ai/zen/go",
+    apiPath: "/v1/messages",
+    apiKeyEnvVar: "OPENCODE_API_KEY",
+    transport: "anthropic",
     type: "remote",
     directApi: true,
   },
@@ -344,23 +370,22 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
 // ---- Derived constants ----
 
-/** Map shortcut -> canonical provider name. Replaces the hardcoded PROVIDER_SHORTCUTS. */
+/** Map shortcut -> canonical provider name. */
 export const PROVIDER_SHORTCUTS: Record<string, string> = Object.fromEntries(
   BUILTIN_PROVIDERS.flatMap(p => p.shortcuts.map(s => [s, p.name]))
 );
 
-/** Providers with direct API access. Replaces the hardcoded DIRECT_API_PROVIDERS set. */
+/** Providers with direct API access. */
 export const DIRECT_API_PROVIDERS = new Set(
   BUILTIN_PROVIDERS.filter(p => p.directApi).map(p => p.name)
 );
 
-/** Local providers. Replaces the hardcoded LOCAL_PROVIDERS set. */
+/** Local providers. */
 export const LOCAL_PROVIDERS = new Set(
   BUILTIN_PROVIDERS.filter(p => p.type === "local").map(p => p.name)
 );
 
-
-/** Legacy prefix patterns for backwards compatibility. Replaces LEGACY_PREFIX_PATTERNS. */
+/** Legacy prefix patterns for backwards compatibility. */
 export const LEGACY_PREFIX_PATTERNS: Array<{ prefix: string; provider: string; stripPrefix: boolean }> =
   BUILTIN_PROVIDERS.flatMap(p =>
     p.legacyPrefixes.map(prefix => ({ prefix, provider: p.name, stripPrefix: true }))
@@ -371,11 +396,45 @@ export const NATIVE_MODEL_PATTERNS: Array<{ pattern: RegExp; provider: string }>
   ...BUILTIN_PROVIDERS
     .filter(p => p.nativeModelPatterns)
     .flatMap(p => p.nativeModelPatterns!.map(pattern => ({ pattern, provider: p.name }))),
-  // Routing-only patterns (no direct API definition needed)
   { pattern: /^qwen/i, provider: "qwen" },
   { pattern: /^anthropic\//i, provider: "native-anthropic" },
   { pattern: /^claude-/i, provider: "native-anthropic" },
 ];
+
+/** API key info for a provider. */
+export interface ApiKeyInfo {
+  envVar: string;
+  description: string;
+  url: string;
+  aliases?: string[];
+  oauthFallback?: string;
+}
+
+export const API_KEY_INFO: Record<string, ApiKeyInfo> = Object.fromEntries(
+  BUILTIN_PROVIDERS
+    .filter(p => p.type === "remote")
+    .map(p => [p.name, {
+      envVar: p.apiKeyEnvVar,
+      description: p.apiKeyDescription ?? `${p.displayName} API Key`,
+      url: p.apiKeyUrl ?? "",
+      ...(p.apiKeyAliases ? { aliases: p.apiKeyAliases } : {}),
+      ...(p.oauthFallback ? { oauthFallback: p.oauthFallback } : {}),
+    }])
+);
+
+/** Local provider prefixes for quick API key skip checks. */
+export const LOCAL_PREFIXES: string[] = [
+  ...BUILTIN_PROVIDERS
+    .filter(p => p.type === "local")
+    .flatMap(p => p.legacyPrefixes),
+  "http://",
+  "https://localhost",
+];
+
+/** Display names for providers. */
+export const PROVIDER_DISPLAY_NAMES: Record<string, string> = Object.fromEntries(
+  BUILTIN_PROVIDERS.map(p => [p.name, p.displayName])
+);
 
 /** Look up a provider definition by canonical name */
 export function getProviderByName(name: string): ProviderDefinition | undefined {
@@ -409,40 +468,4 @@ export function getRemoteProviders(): Array<{
       ...(p.headers ? { headers: p.headers } : {}),
     }));
 }
-
-/** API key info for a provider. Replaces API_KEY_INFO in provider-resolver.ts. */
-export interface ApiKeyInfo {
-  envVar: string;
-  description: string;
-  url: string;
-  aliases?: string[];
-  oauthFallback?: string;
-}
-
-export const API_KEY_INFO: Record<string, ApiKeyInfo> = Object.fromEntries(
-  BUILTIN_PROVIDERS
-    .filter(p => p.type === "remote")
-    .map(p => [p.name, {
-      envVar: p.apiKeyEnvVar,
-      description: p.apiKeyDescription ?? `${p.displayName} API Key`,
-      url: p.apiKeyUrl ?? "",
-      ...(p.apiKeyAliases ? { aliases: p.apiKeyAliases } : {}),
-      ...(p.oauthFallback ? { oauthFallback: p.oauthFallback } : {}),
-    }])
-);
-
-/** Local provider prefixes (for quick "does this need an API key?" checks).
- *  Replaces LOCAL_PREFIXES in provider-resolver.ts. */
-export const LOCAL_PREFIXES: string[] = [
-  ...BUILTIN_PROVIDERS
-    .filter(p => p.type === "local")
-    .flatMap(p => p.legacyPrefixes),
-  "http://",
-  "https://localhost",
-];
-
-/** Display names for providers. Replaces PROVIDER_DISPLAY_NAMES in provider-resolver.ts. */
-export const PROVIDER_DISPLAY_NAMES: Record<string, string> = Object.fromEntries(
-  BUILTIN_PROVIDERS.map(p => [p.name, p.displayName])
-);
 

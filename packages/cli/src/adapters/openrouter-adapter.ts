@@ -11,7 +11,7 @@
  */
 
 import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
-import { AdapterManager } from "./adapter-manager.js";
+import { resolveModelAdapter } from "./adapter-manager.js";
 import { removeUriFormat } from "../transform.js";
 import { log } from "../logger.js";
 
@@ -21,9 +21,7 @@ export class OpenRouterAdapter extends BaseModelAdapter {
   constructor(modelId: string) {
     super(modelId);
 
-    // Get model-specific adapter (GrokAdapter, GeminiAdapter, etc.)
-    const manager = new AdapterManager(modelId);
-    this.innerAdapter = manager.getAdapter();
+    this.innerAdapter = resolveModelAdapter(modelId);
   }
 
   /** Synchronous reasoning support check via model ID patterns */

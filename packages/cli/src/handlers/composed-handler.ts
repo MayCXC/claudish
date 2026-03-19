@@ -20,7 +20,7 @@ import type { Context } from "hono";
 import type { ModelHandler } from "./types.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import type { BaseModelAdapter } from "../adapters/base-adapter.js";
-import { AdapterManager } from "../adapters/adapter-manager.js";
+import { resolveModelAdapter } from "../adapters/adapter-manager.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
@@ -65,10 +65,11 @@ export interface ComposedHandlerOptions {
 
 export class ComposedHandler implements ModelHandler {
   private provider: ProviderTransport;
-  private adapterManager: AdapterManager;
   private explicitAdapter?: BaseModelAdapter;
   /** Model-specific adapter (GLM, Grok, etc.) — handles model quirks independent of provider */
   private modelAdapter?: BaseModelAdapter;
+  /** Resolved model adapter (explicit or auto-selected) cached for getAdapter() */
+  private resolvedAdapter: BaseModelAdapter;
   private middlewareManager: MiddlewareManager;
   private tokenTracker: TokenTracker;
   private targetModel: string;
@@ -90,15 +91,15 @@ export class ComposedHandler implements ModelHandler {
     this.explicitAdapter = options.adapter;
     this.isInteractive = options.isInteractive ?? false;
 
-    // Initialize adapter manager for automatic adapter selection
-    this.adapterManager = new AdapterManager(targetModel);
-
-    // Always resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
+    // Resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
     // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
-    const resolvedModelAdapter = this.adapterManager.getAdapter();
+    const resolvedModelAdapter = resolveModelAdapter(targetModel);
     if (resolvedModelAdapter.getName() !== "DefaultAdapter") {
       this.modelAdapter = resolvedModelAdapter;
     }
+
+    // Cache the effective adapter (explicit wins over auto-selected)
+    this.resolvedAdapter = this.explicitAdapter || resolvedModelAdapter;
 
     // Initialize middleware (only register model-specific middleware when applicable)
     this.middlewareManager = new MiddlewareManager();
@@ -120,7 +121,7 @@ export class ComposedHandler implements ModelHandler {
 
   /** Provider adapter — handles transport format (messages, tools, payload) */
   private getAdapter(): BaseModelAdapter {
-    return this.explicitAdapter || this.adapterManager.getAdapter();
+    return this.resolvedAdapter;
   }
 
   /** Model context window — model adapter wins over provider adapter */
