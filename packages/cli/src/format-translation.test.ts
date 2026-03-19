@@ -552,10 +552,10 @@ describe("ModelTranslator interface compliance", () => {
 
 describe("ProviderProfile table completeness", () => {
   test("all expected providers are registered", async () => {
-    const { PROVIDER_PROFILES } = await import("./providers/provider-profiles.js");
+    const { PROVIDER_PROFILES } = await import("./providers/provider-registry.js");
 
     const expectedProviders = [
-      "gemini", "gemini-codeassist", "openai",
+      "google", "gemini-codeassist", "openai",
       "minimax", "minimax-coding", "kimi", "kimi-coding", "zai",
       "glm", "glm-coding",
       "opencode-zen", "opencode-zen-go",
@@ -568,7 +568,7 @@ describe("ProviderProfile table completeness", () => {
   });
 
   test("each profile has a createHandler function", async () => {
-    const { PROVIDER_PROFILES } = await import("./providers/provider-profiles.js");
+    const { PROVIDER_PROFILES } = await import("./providers/provider-registry.js");
 
     for (const [name, profile] of Object.entries(PROVIDER_PROFILES)) {
       expect(typeof profile.createHandler).toBe("function");

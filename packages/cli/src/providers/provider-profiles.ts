@@ -249,7 +249,7 @@ const vertexProfile: ProviderProfile = {
       // but with VERTEX_API_KEY instead of GEMINI_API_KEY.
       // Must use the Gemini provider config (which has the correct baseUrl/apiPath)
       // because the vertex provider config has empty baseUrl/apiPath (designed for OAuth mode).
-      const geminiConfig = getRegisteredRemoteProviders().find((p) => p.name === "gemini");
+      const geminiConfig = getRegisteredRemoteProviders().find((p) => p.name === "google");
       const expressProvider = geminiConfig || ctx.provider;
       const transport = new GeminiApiKeyProvider(
         expressProvider,
@@ -313,39 +313,19 @@ const vertexProfile: ProviderProfile = {
  *
  * Lookup is O(1). Add new providers here — no changes to proxy-server.ts needed.
  */
-export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
-  gemini: geminiProfile,
+// Profile implementations keyed by profile name (shared across providers)
+const PROFILE_REGISTRY: Record<string, ProviderProfile> = {
+  "gemini": geminiProfile,
   "gemini-codeassist": geminiCodeAssistProfile,
-  openai: openaiProfile,
-  minimax: anthropicCompatProfile,
-  "minimax-coding": anthropicCompatProfile,
-  kimi: anthropicCompatProfile,
-  "kimi-coding": anthropicCompatProfile,
-  zai: anthropicCompatProfile,
-  glm: glmProfile,
-  "glm-coding": glmProfile,
+  "openai": openaiProfile,
+  "anthropic-compat": anthropicCompatProfile,
+  "glm": glmProfile,
   "opencode-zen": openCodeZenProfile,
-  "opencode-zen-go": openCodeZenProfile,
-  ollamacloud: ollamaCloudProfile,
-  litellm: litellmProfile,
-  vertex: vertexProfile,
+  "ollamacloud": ollamaCloudProfile,
+  "litellm": litellmProfile,
+  "vertex": vertexProfile,
 };
 
-// ---------------------------------------------------------------------------
-// Public factory
-// ---------------------------------------------------------------------------
-
-/**
- * Create a ModelHandler for the given resolved provider using the profile table.
- *
- * Returns null when:
- * - The provider name is not in PROVIDER_PROFILES (unknown provider)
- * - The profile's createHandler() returns null (e.g. missing config)
- */
-export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | null {
-  const profile = PROVIDER_PROFILES[ctx.provider.name];
-  if (!profile) {
-    return null; // Unknown provider — caller should fall through to OpenRouter or return null
-  }
-  return profile.createHandler(ctx);
-}
+// PROVIDER_PROFILES and createHandlerForProvider live in provider-registry.ts
+// (co-located with provider resolution for PR 2 unification).
+export { PROFILE_REGISTRY };

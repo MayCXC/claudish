@@ -21,7 +21,7 @@ export type StreamFormat =
  * transforms (messages, tools, payload shape) live in ModelAdapter.
  */
 export interface ProviderTransport {
-  /** Internal provider identifier (e.g., "openai", "gemini", "litellm") */
+  /** Internal provider identifier (e.g., "openai", "google", "litellm") */
   readonly name: string;
 
   /** Human-readable name for display (e.g., "OpenAI", "Google Gemini") */

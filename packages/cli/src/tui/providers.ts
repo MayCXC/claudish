@@ -23,7 +23,7 @@ export const PROVIDERS: ProviderDef[] = [
     keyUrl: "https://openrouter.ai/keys",
   },
   {
-    name: "gemini",
+    name: "google",
     displayName: "Google Gemini",
     apiKeyEnvVar: "GEMINI_API_KEY",
     description: "Direct Gemini API (g@, google@)",

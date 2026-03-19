@@ -52,7 +52,7 @@ import {
   matchRoutingRule,
   buildRoutingChain,
 } from "./providers/routing-rules.js";
-import { createHandlerForProvider } from "./providers/provider-profiles.js";
+import { createHandlerForProvider } from "./providers/provider-registry.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models

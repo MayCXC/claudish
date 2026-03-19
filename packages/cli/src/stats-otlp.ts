@@ -20,7 +20,7 @@ export interface StatsEvent {
 
   // Model & Provider
   model_id: string; // sanitized (local models → <local-model>)
-  provider_name: string; // e.g., "openrouter", "gemini", "ollama"
+  provider_name: string; // e.g., "openrouter", "google", "ollama"
   stream_format: string; // e.g., "openai-sse", "gemini-sse"
 
   // Performance

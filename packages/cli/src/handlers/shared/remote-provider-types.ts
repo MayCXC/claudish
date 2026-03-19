@@ -85,7 +85,7 @@ const SUBSCRIPTION_PROVIDERS = new Set(["minimax-coding", "kimi-coding", "glm-co
 
 /** Map provider aliases to canonical names used in PROVIDER_DEFAULTS */
 const PROVIDER_ALIAS: Record<string, string> = {
-  google: "gemini",
+  google: "google",
   oai: "openai",
   mm: "minimax",
   moonshot: "kimi",

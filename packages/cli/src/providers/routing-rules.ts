@@ -2,7 +2,7 @@ import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingRules, RoutingEntry } from "../profile-config.js";
 import type { FallbackRoute } from "./auto-route.js";
 import { PROVIDER_TO_PREFIX, DISPLAY_NAMES } from "./auto-route.js";
-import { PROVIDER_SHORTCUTS } from "./model-parser.js";
+import { PROVIDER_SHORTCUTS } from "./provider-definitions.js";
 import { resolveModelNameSync } from "./model-catalog-resolver.js";
 
 /**

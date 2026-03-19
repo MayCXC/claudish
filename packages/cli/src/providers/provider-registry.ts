@@ -9,20 +9,21 @@
  */
 
 import { parseModelSpec, isLocalProviderName, type ParsedModel } from "./model-parser.js";
+import { BUILTIN_PROVIDERS } from "./provider-definitions.js";
 
 export interface LocalProvider {
   name: string;
   baseUrl: string;
   apiPath: string;
   envVar: string;
-  prefixes: string[]; // Legacy prefixes for backwards compatibility
+  prefixes: string[];
 }
 
 export interface ResolvedProvider {
   provider: LocalProvider;
   modelName: string;
-  concurrency?: number; // Concurrency limit from model spec
-  isLegacySyntax?: boolean; // For deprecation warnings
+  concurrency?: number;
+  isLegacySyntax?: boolean;
 }
 
 export interface UrlParsedModel {
@@ -30,37 +31,31 @@ export interface UrlParsedModel {
   modelName: string;
 }
 
-// Built-in provider configurations
-const getProviders = (): LocalProvider[] => [
-  {
-    name: "ollama",
-    baseUrl: process.env.OLLAMA_HOST || process.env.OLLAMA_BASE_URL || "http://localhost:11434",
-    apiPath: "/v1/chat/completions",
-    envVar: "OLLAMA_BASE_URL",
-    prefixes: ["ollama/", "ollama:"],
-  },
-  {
-    name: "lmstudio",
-    baseUrl: process.env.LMSTUDIO_BASE_URL || "http://localhost:1234",
-    apiPath: "/v1/chat/completions",
-    envVar: "LMSTUDIO_BASE_URL",
-    prefixes: ["lmstudio/", "lmstudio:", "mlstudio/", "mlstudio:"], // mlstudio alias for common typo
-  },
-  {
-    name: "vllm",
-    baseUrl: process.env.VLLM_BASE_URL || "http://localhost:8000",
-    apiPath: "/v1/chat/completions",
-    envVar: "VLLM_BASE_URL",
-    prefixes: ["vllm/", "vllm:"],
-  },
-  {
-    name: "mlx",
-    baseUrl: process.env.MLX_BASE_URL || "http://127.0.0.1:8080",
-    apiPath: "/v1/chat/completions",
-    envVar: "MLX_BASE_URL",
-    prefixes: ["mlx/", "mlx:"],
-  },
-];
+// Local provider env var defaults (not in BUILTIN_PROVIDERS since they're runtime)
+const LOCAL_DEFAULTS: Record<string, { baseUrlEnvVars: string[]; defaultUrl: string }> = {
+  ollama: { baseUrlEnvVars: ["OLLAMA_HOST", "OLLAMA_BASE_URL"], defaultUrl: "http://localhost:11434" },
+  lmstudio: { baseUrlEnvVars: ["LMSTUDIO_BASE_URL"], defaultUrl: "http://localhost:1234" },
+  vllm: { baseUrlEnvVars: ["VLLM_BASE_URL"], defaultUrl: "http://localhost:8000" },
+  mlx: { baseUrlEnvVars: ["MLX_BASE_URL"], defaultUrl: "http://127.0.0.1:8080" },
+};
+
+// Derived from BUILTIN_PROVIDERS
+const getProviders = (): LocalProvider[] =>
+  BUILTIN_PROVIDERS
+    .filter(p => p.type === "local")
+    .map(p => {
+      const defaults = LOCAL_DEFAULTS[p.name];
+      const baseUrl = defaults?.baseUrlEnvVars
+        .map(v => process.env[v])
+        .find(Boolean) ?? defaults?.defaultUrl ?? "";
+      return {
+        name: p.name,
+        baseUrl,
+        apiPath: "/v1/chat/completions",
+        envVar: defaults?.baseUrlEnvVars[defaults.baseUrlEnvVars.length - 1] ?? "",
+        prefixes: p.legacyPrefixes,
+      };
+    });
 
 /**
  * Get all registered providers (refreshes env vars on each call)
@@ -196,4 +191,26 @@ export function createUrlProvider(parsed: UrlParsedModel): LocalProvider {
     envVar: "",
     prefixes: [],
   };
+}
+
+// ---- Provider profiles (handler construction) ----
+// Co-located here for PR 2 which unifies local + remote resolution with handler construction.
+
+import { PROFILE_REGISTRY, type ProviderProfile, type ProfileContext } from "./provider-profiles.js";
+import type { ModelHandler } from "../handlers/types.js";
+
+export type { ProviderProfile, ProfileContext };
+
+/** Map provider name -> profile for handler construction. Derived from BUILTIN_PROVIDERS.profile. */
+export const PROVIDER_PROFILES: Record<string, ProviderProfile> = Object.fromEntries(
+  BUILTIN_PROVIDERS
+    .filter(p => p.profile && PROFILE_REGISTRY[p.profile])
+    .map(p => [p.name, PROFILE_REGISTRY[p.profile!]])
+);
+
+/** Create a ModelHandler for a resolved provider. */
+export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | null {
+  const profile = PROVIDER_PROFILES[ctx.provider.name];
+  if (!profile) return null;
+  return profile.createHandler(ctx);
 }

@@ -47,7 +47,7 @@ const KNOWN_PUBLIC_HOSTS = new Set([
  */
 const PUBLIC_PROVIDERS = new Set([
   "openrouter",
-  "gemini",
+  "google",
   "gemini-codeassist",
   "openai",
   "vertex",

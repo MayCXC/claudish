@@ -171,7 +171,7 @@ async function testProviderConnection(provider: ProviderDef, key: string): Promi
     if (provider.name === "openrouter") {
       url = "https://openrouter.ai/api/v1/models";
       headers = { Authorization: `Bearer ${key}` };
-    } else if (provider.name === "gemini") {
+    } else if (provider.name === "google") {
       url = `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`;
       headers = {};
     } else if (provider.name === "openai") {

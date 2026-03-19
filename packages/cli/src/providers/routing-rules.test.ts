@@ -9,7 +9,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { matchRoutingRule, buildRoutingChain, loadRoutingRules } from "./routing-rules.js";
-import { PROVIDER_SHORTCUTS } from "./model-parser.js";
+import { PROVIDER_SHORTCUTS } from "./provider-definitions.js";
 import { PROVIDER_TO_PREFIX, DISPLAY_NAMES } from "./auto-route.js";
 import type { RoutingRules } from "../profile-config.js";
 
