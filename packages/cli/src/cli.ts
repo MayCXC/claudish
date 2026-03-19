@@ -1353,7 +1353,7 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
       const providerName = firstReadyRoute.provider;
 
       // Resolve model name from the model spec (strip provider prefix if present)
-      const { resolveRemoteProvider } = await import("./providers/remote-provider-registry.js");
+      const { resolveRemoteProvider } = await import("./providers/provider-registry.js");
       const resolvedSpec = resolveRemoteProvider(firstReadyRoute.modelSpec);
       const modelName = resolvedSpec?.modelName || parsed.model;
 

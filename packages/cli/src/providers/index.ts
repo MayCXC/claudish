@@ -11,23 +11,22 @@ export {
   type ProviderResolution,
 } from "./provider-resolver.js";
 
-// Local provider registry
+// Provider registry (local + remote resolution + handler construction)
 export {
   resolveProvider,
   isLocalProvider,
   parseUrlModel,
   createUrlProvider,
   getRegisteredProviders,
+  resolveRemoteProvider,
+  hasRemoteProviderPrefix,
+  getRemoteProviderType,
+  validateRemoteProviderApiKey,
+  getRegisteredRemoteProviders,
   type LocalProvider,
   type ResolvedProvider,
   type UrlParsedModel,
 } from "./provider-registry.js";
-
-// Remote provider registry
-export {
-  resolveRemoteProvider,
-  getRegisteredRemoteProviders,
-} from "./remote-provider-registry.js";
 
 // Provider definitions - single source of truth for all provider identity
 export {
@@ -56,8 +55,7 @@ export {
   type ParsedModel,
 } from "./model-parser.js";
 
-// Provider profiles - handler construction (derived from BUILTIN_PROVIDERS.profile)
-// PR 2 replaces this with provider-selector.ts (selectProviderComponents pattern)
+// Handler construction (derived from BUILTIN_PROVIDERS.transport)
 export {
   PROVIDER_PROFILES,
   createHandlerForProvider,

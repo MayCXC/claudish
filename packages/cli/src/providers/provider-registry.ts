@@ -193,24 +193,186 @@ export function createUrlProvider(parsed: UrlParsedModel): LocalProvider {
   };
 }
 
-// ---- Provider profiles (handler construction) ----
-// Co-located here for PR 2 which unifies local + remote resolution with handler construction.
+// ---- Handler construction (transport + adapter from definition) ----
 
-import { PROFILE_REGISTRY, type ProviderProfile, type ProfileContext } from "./provider-profiles.js";
 import type { ModelHandler } from "../handlers/types.js";
+import type { ComposedHandlerOptions } from "../handlers/composed-handler.js";
 
-export type { ProviderProfile, ProfileContext };
+export interface ProfileContext {
+  provider: RemoteProvider;
+  modelName: string;
+  apiKey: string;
+  targetModel: string;
+  port: number;
+  sharedOpts: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode">;
+}
 
-/** Map provider name -> profile for handler construction. Derived from BUILTIN_PROVIDERS.profile. */
+export interface ProviderProfile {
+  createHandler(ctx: ProfileContext): ModelHandler | null;
+}
+import type { ProviderTransport } from "./transport/types.js";
+import type { BaseModelAdapter } from "../adapters/base-adapter.js";
+import { ComposedHandler } from "../handlers/composed-handler.js";
+import { GeminiApiKeyProvider } from "./transport/gemini-apikey.js";
+import { GeminiCodeAssistProvider } from "./transport/gemini-codeassist.js";
+import { GeminiAdapter } from "../adapters/gemini-adapter.js";
+import { OpenAIProvider } from "./transport/openai.js";
+import { OpenAIAdapter } from "../adapters/openai-adapter.js";
+import { AnthropicCompatProvider } from "./transport/anthropic-compat.js";
+import { AnthropicPassthroughAdapter } from "../adapters/anthropic-passthrough-adapter.js";
+import { OllamaCloudProvider } from "./transport/ollamacloud.js";
+import { OllamaCloudAdapter } from "../adapters/ollamacloud-adapter.js";
+import { LiteLLMProvider } from "./transport/litellm.js";
+import { LiteLLMAdapter } from "../adapters/litellm-adapter.js";
+import { VertexOAuthProvider, parseVertexModel } from "./transport/vertex-oauth.js";
+import { DefaultAdapter } from "../adapters/base-adapter.js";
+import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
+import { log, logStderr } from "../logger.js";
+
+export type { ProfileContext, ProviderProfile };
+
+/** Resolve effective transport type from definition, handling zen minimax redirect. */
+function resolveTransport(def: ProviderDefinition, modelName: string): string | undefined {
+  if (!def.transport) return undefined;
+  if (def.transport === "opencode-zen") {
+    return modelName.toLowerCase().includes("minimax") ? "anthropic" : "openai";
+  }
+  return def.transport;
+}
+
+/** Construct the transport for a given transport type. */
+function resolveProviderTransport(
+  transport: string, provider: RemoteProvider, modelName: string, apiKey: string,
+): ProviderTransport | null {
+  switch (transport) {
+    case "gemini":       return new GeminiApiKeyProvider(provider, modelName, apiKey);
+    case "gemini-oauth": return new GeminiCodeAssistProvider(modelName);
+    case "openai":       return new OpenAIProvider(provider, modelName, apiKey);
+    case "anthropic":    return new AnthropicCompatProvider(provider, apiKey);
+    case "ollamacloud":  return new OllamaCloudProvider(provider, apiKey);
+    case "litellm":
+      if (!provider.baseUrl) { logStderr("Error: LITELLM_BASE_URL is required."); return null; }
+      return new LiteLLMProvider(provider.baseUrl, apiKey, modelName);
+    case "vertex": {
+      if (process.env.VERTEX_API_KEY) {
+        const gemini = getRegisteredRemoteProviders().find(p => p.name === "google");
+        return new GeminiApiKeyProvider(gemini || provider, modelName, process.env.VERTEX_API_KEY);
+      }
+      const cfg = getVertexConfig();
+      if (!cfg) { logStderr("Error: VERTEX_PROJECT or VERTEX_API_KEY required."); return null; }
+      const err = validateVertexOAuthConfig();
+      if (err) { logStderr(`[Proxy] Vertex OAuth: ${err}`); return null; }
+      return new VertexOAuthProvider(cfg, parseVertexModel(modelName));
+    }
+    default: return null;
+  }
+}
+
+/** Construct the format adapter for a given transport type. */
+function resolveFormatAdapter(
+  transport: string, provider: RemoteProvider, modelName: string,
+): BaseModelAdapter | null {
+  switch (transport) {
+    case "gemini":
+    case "gemini-oauth":  return new GeminiAdapter(modelName);
+    case "openai":        return new OpenAIAdapter(modelName);
+    case "anthropic":     return new AnthropicPassthroughAdapter(modelName, provider.name);
+    case "ollamacloud":   return new OllamaCloudAdapter(modelName);
+    case "litellm":       return provider.baseUrl ? new LiteLLMAdapter(modelName, provider.baseUrl) : null;
+    case "vertex": {
+      const parsed = parseVertexModel(modelName);
+      if (parsed.publisher === "google") return new GeminiAdapter(modelName);
+      if (parsed.publisher === "anthropic") return new AnthropicPassthroughAdapter(parsed.model, "vertex");
+      const id = parsed.publisher === "mistralai" ? parsed.model : `${parsed.publisher}/${parsed.model}`;
+      return new DefaultAdapter(id);
+    }
+    default: return null;
+  }
+}
+
+/**
+ * Create a ModelHandler for a resolved provider.
+ * Constructs transport + adapter from the definition's transport field.
+ */
+export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | null {
+  const def = getProviderByName(ctx.provider.name);
+  if (!def?.transport) return null;
+
+  const transport = resolveTransport(def, ctx.modelName);
+  if (!transport) return null;
+
+  const apiKey = ctx.apiKey || (def.name.startsWith("opencode-zen") ? "public" : "");
+  const t = resolveProviderTransport(transport, ctx.provider, ctx.modelName, apiKey);
+  if (!t) return null;
+
+  const a = resolveFormatAdapter(transport, ctx.provider, ctx.modelName);
+  if (!a) return null;
+
+  const handler = new ComposedHandler(t, ctx.targetModel, ctx.modelName, ctx.port, {
+    adapter: a,
+    ...ctx.sharedOpts,
+  });
+  log(`[Proxy] Created ${def.displayName} handler (${transport}): ${ctx.modelName}`);
+  return handler;
+}
+
+// Backwards compatibility: PROVIDER_PROFILES for tests that check table completeness
 export const PROVIDER_PROFILES: Record<string, ProviderProfile> = Object.fromEntries(
   BUILTIN_PROVIDERS
-    .filter(p => p.profile && PROFILE_REGISTRY[p.profile])
-    .map(p => [p.name, PROFILE_REGISTRY[p.profile!]])
+    .filter(p => p.transport)
+    .map(p => [p.name, { createHandler: createHandlerForProvider }])
 );
 
-/** Create a ModelHandler for a resolved provider. */
-export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | null {
-  const profile = PROVIDER_PROFILES[ctx.provider.name];
-  if (!profile) return null;
-  return profile.createHandler(ctx);
+// ---- Remote provider resolution (merged from remote-provider-registry.ts) ----
+
+import type {
+  RemoteProvider,
+  ResolvedRemoteProvider,
+} from "../handlers/shared/remote-provider-types.js";
+import { getRemoteProviders, API_KEY_INFO } from "./provider-definitions.js";
+
+export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider | null {
+  const providers = getRemoteProviders() as RemoteProvider[];
+  const parsed = parseModelSpec(modelId);
+
+  if (isLocalProviderName(parsed.provider)) return null;
+  if (parsed.provider === "custom-url") return null;
+
+  const provider = providers.find((p) => p.name === parsed.provider);
+  if (provider) {
+    return { provider, modelName: parsed.model, isLegacySyntax: parsed.isLegacySyntax };
+  }
+
+  for (const provider of providers) {
+    for (const prefix of provider.prefixes) {
+      if (modelId.startsWith(prefix)) {
+        return { provider, modelName: modelId.slice(prefix.length), isLegacySyntax: true };
+      }
+    }
+  }
+
+  return null;
+}
+
+export function hasRemoteProviderPrefix(modelId: string): boolean {
+  return resolveRemoteProvider(modelId) !== null;
+}
+
+export function getRemoteProviderType(modelId: string): string | null {
+  return resolveRemoteProvider(modelId)?.provider.name || null;
+}
+
+export function validateRemoteProviderApiKey(provider: RemoteProvider): string | null {
+  if (provider.apiKeyEnvVar === "") return null;
+  if (process.env[provider.apiKeyEnvVar]) return null;
+
+  const info = API_KEY_INFO[provider.name];
+  const example = info
+    ? `export ${provider.apiKeyEnvVar}='your-key' (get from ${info.url})`
+    : `export ${provider.apiKeyEnvVar}='your-key'`;
+  return `Missing ${provider.apiKeyEnvVar} environment variable.\n\nSet it with:\n  ${example}`;
+}
+
+export function getRegisteredRemoteProviders(): RemoteProvider[] {
+  return getRemoteProviders() as RemoteProvider[];
 }

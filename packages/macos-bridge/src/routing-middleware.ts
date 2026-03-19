@@ -19,7 +19,7 @@ import { OpenRouterProvider } from "../../cli/src/providers/transport/openrouter
 import { OpenRouterAdapter } from "../../cli/src/adapters/openrouter-adapter.js";
 import {
   getRegisteredRemoteProviders,
-} from "../../cli/src/providers/remote-provider-registry.js";
+} from "../../cli/src/providers/provider-registry.js";
 import {
   resolveProvider,
 } from "../../cli/src/providers/provider-registry.js";

@@ -29,7 +29,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { resolveProvider, parseUrlModel } from "./provider-registry.js";
-import { resolveRemoteProvider } from "./remote-provider-registry.js";
+import { resolveRemoteProvider } from "./provider-registry.js";
 import { autoRoute, getAutoRouteHint } from "./auto-route.js";
 import {
   parseModelSpec,

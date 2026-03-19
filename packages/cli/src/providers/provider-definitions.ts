@@ -41,9 +41,9 @@ export interface ProviderDefinition {
   authScheme?: "bearer" | "x-api-key";
   /** Extra HTTP headers */
   headers?: Record<string, string>;
-  /** Profile name for handler construction (maps to PROVIDER_PROFILES key in provider-profiles.ts).
-   *  Providers sharing the same transport+adapter use the same profile name. */
-  profile?: string;
+  /** Transport type for handler construction. Determines which transport class
+   *  and format adapter to use. Model adapter is selected independently by model name. */
+  transport?: "gemini" | "gemini-oauth" | "openai" | "anthropic" | "ollamacloud" | "litellm" | "vertex" | "opencode-zen";
 }
 
 export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
@@ -58,7 +58,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "Google Gemini API Key",
     apiKeyUrl: "https://aistudio.google.com/app/apikey",
     nativeModelPatterns: [/^google\//i, /^gemini-/i],
-    profile: "gemini",
+    transport: "gemini",
     type: "remote",
     directApi: true,
   },
@@ -72,7 +72,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyEnvVar: "",
     apiKeyDescription: "Gemini Code Assist (OAuth)",
     apiKeyUrl: "https://cloud.google.com/code-assist",
-    profile: "gemini-codeassist",
+    transport: "gemini-oauth",
     type: "remote",
     directApi: true,
   },
@@ -87,7 +87,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "OpenAI API Key",
     apiKeyUrl: "https://platform.openai.com/api-keys",
     nativeModelPatterns: [/^openai\//i, /^gpt-/i, /^o1(-|$)/i, /^o3(-|$)/i, /^chatgpt-/i],
-    profile: "openai",
+    transport: "openai",
     type: "remote",
     directApi: true,
   },
@@ -119,7 +119,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "MiniMax API Key",
     apiKeyUrl: "https://www.minimaxi.com/",
     nativeModelPatterns: [/^minimax\//i, /^minimax-/i, /^abab-/i],
-    profile: "anthropic-compat",
+    transport: "anthropic",
     type: "remote",
     directApi: true,
     authScheme: "bearer",
@@ -134,7 +134,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyEnvVar: "MINIMAX_CODING_API_KEY",
     apiKeyDescription: "MiniMax Coding Plan API Key",
     apiKeyUrl: "https://platform.minimax.io/user-center/basic-information/interface-key",
-    profile: "anthropic-compat",
+    transport: "anthropic",
     type: "remote",
     directApi: true,
     authScheme: "bearer",
@@ -151,7 +151,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "Kimi/Moonshot API Key",
     apiKeyUrl: "https://platform.moonshot.cn/",
     nativeModelPatterns: [/^moonshot(ai)?\//i, /^moonshot-/i, /^kimi-/i],
-    profile: "anthropic-compat",
+    transport: "anthropic",
     type: "remote",
     directApi: true,
   },
@@ -166,7 +166,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "Kimi Coding API Key",
     apiKeyUrl: "https://kimi.com/code",
     oauthFallback: "kimi-oauth.json",
-    profile: "anthropic-compat",
+    transport: "anthropic",
     type: "remote",
     directApi: true,
   },
@@ -182,7 +182,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "GLM/Zhipu API Key",
     apiKeyUrl: "https://open.bigmodel.cn/",
     nativeModelPatterns: [/^zhipu\//i, /^glm-/i, /^chatglm-/i],
-    profile: "glm",
+    transport: "openai",
     type: "remote",
     directApi: true,
   },
@@ -197,7 +197,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyAliases: ['ZAI_CODING_API_KEY'],
     apiKeyDescription: "GLM Coding Plan API Key",
     apiKeyUrl: "https://z.ai/subscribe",
-    profile: "glm",
+    transport: "openai",
     type: "remote",
     directApi: true,
   },
@@ -211,7 +211,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyEnvVar: "ZAI_API_KEY",
     apiKeyDescription: "Z.AI API Key",
     apiKeyUrl: "https://z.ai/",
-    profile: "anthropic-compat",
+    transport: "anthropic",
     type: "remote",
     directApi: true,
   },
@@ -226,7 +226,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "OllamaCloud API Key",
     apiKeyUrl: "https://ollama.com/account",
     nativeModelPatterns: [/^ollamacloud\//i, /^meta-llama\//i, /^llama-/i, /^llama3/i],
-    profile: "ollamacloud",
+    transport: "ollamacloud",
     type: "remote",
     directApi: true,
   },
@@ -240,7 +240,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyEnvVar: "OPENCODE_API_KEY",
     apiKeyDescription: "OpenCode Zen (Free)",
     apiKeyUrl: "https://opencode.ai/",
-    profile: "opencode-zen",
+    transport: "opencode-zen",
     type: "remote",
     directApi: true,
   },
@@ -254,7 +254,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       : "https://opencode.ai/zen/go",
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENCODE_API_KEY",
-    profile: "opencode-zen",
+    transport: "opencode-zen",
     type: "remote",
     directApi: true,
   },
@@ -269,7 +269,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyAliases: ['VERTEX_PROJECT'],
     apiKeyDescription: "Vertex AI API Key",
     apiKeyUrl: "https://console.cloud.google.com/vertex-ai",
-    profile: "vertex",
+    transport: "vertex",
     type: "remote",
     directApi: true,
   },
@@ -283,7 +283,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyEnvVar: "LITELLM_API_KEY",
     apiKeyDescription: "LiteLLM API Key",
     apiKeyUrl: "https://docs.litellm.ai/",
-    profile: "litellm",
+    transport: "litellm",
     type: "remote",
     directApi: true,
   },
@@ -392,7 +392,7 @@ export function isDirectApiProvider(provider: string): boolean {
   return DIRECT_API_PROVIDERS.has(provider.toLowerCase());
 }
 
-/** Build RemoteProvider configs from definitions (for remote-provider-registry). */
+/** Build RemoteProvider configs from definitions (for provider-registry). */
 export function getRemoteProviders(): Array<{
   name: string; baseUrl: string; apiPath: string; apiKeyEnvVar: string;
   prefixes: string[]; authScheme?: "bearer" | "x-api-key"; headers?: Record<string, string>;

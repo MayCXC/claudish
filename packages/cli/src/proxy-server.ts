@@ -34,7 +34,7 @@ import {
   resolveRemoteProvider,
   validateRemoteProviderApiKey,
   getRegisteredRemoteProviders,
-} from "./providers/remote-provider-registry.js";
+} from "./providers/provider-registry.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "./auth/vertex-auth.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { warmPricingCache } from "./services/pricing-cache.js";

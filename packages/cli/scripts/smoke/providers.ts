@@ -7,7 +7,7 @@
  */
 
 import type { RemoteProvider } from "../../src/handlers/shared/remote-provider-types.js";
-import { getRegisteredRemoteProviders } from "../../src/providers/remote-provider-registry.js";
+import { getRegisteredRemoteProviders } from "../../src/providers/provider-registry.js";
 import type { SmokeProviderConfig, WireFormat } from "./types.js";
 
 // Providers to skip in v1 smoke tests
