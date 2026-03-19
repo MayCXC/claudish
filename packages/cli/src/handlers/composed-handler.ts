@@ -19,8 +19,7 @@
 import type { Context } from "hono";
 import type { ModelHandler } from "./types.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
-import type { BaseModelAdapter } from "../adapters/base-adapter.js";
-import { resolveModelAdapter } from "../providers/provider-registry.js";
+import { DefaultAdapter, type BaseModelAdapter } from "../adapters/base-adapter.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
@@ -49,6 +48,8 @@ function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
 export interface ComposedHandlerOptions {
   /** Override adapter selection — use this specific adapter instance */
   adapter?: BaseModelAdapter;
+  /** Model-specific adapter (GLM, Grok, etc.) injected by the registry */
+  modelAdapter?: BaseModelAdapter;
   /** Tool schemas for validation (enables buffered tool call validation) */
   toolSchemas?: any[];
   /** Token tracking strategy */
@@ -91,15 +92,14 @@ export class ComposedHandler implements ModelHandler {
     this.explicitAdapter = options.adapter;
     this.isInteractive = options.isInteractive ?? false;
 
-    // Resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
-    // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
-    const resolvedModelAdapter = resolveModelAdapter(targetModel);
-    if (resolvedModelAdapter.getName() !== "DefaultAdapter") {
-      this.modelAdapter = resolvedModelAdapter;
+    // Model-specific adapter (GLM, Grok, DeepSeek, etc.) injected by caller
+    const injectedModelAdapter = options.modelAdapter;
+    if (injectedModelAdapter && injectedModelAdapter.getName() !== "DefaultAdapter") {
+      this.modelAdapter = injectedModelAdapter;
     }
 
-    // Cache the effective adapter (explicit wins over auto-selected)
-    this.resolvedAdapter = this.explicitAdapter || resolvedModelAdapter;
+    // Effective adapter: explicit format adapter wins, then model adapter, then default
+    this.resolvedAdapter = this.explicitAdapter || injectedModelAdapter || new DefaultAdapter(targetModel);
 
     // Initialize middleware (only register model-specific middleware when applicable)
     this.middlewareManager = new MiddlewareManager();

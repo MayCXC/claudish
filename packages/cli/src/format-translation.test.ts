@@ -453,7 +453,7 @@ describe("Model Adapter Quirks", () => {
   });
 
   test("resolveModelAdapter selects correct adapter for model IDs", async () => {
-    const { resolveModelAdapter } = await import("./adapters/adapter-manager.js");
+    const { resolveModelAdapter } = await import("./providers/provider-registry.js");
 
     expect(resolveModelAdapter("glm-5").getName()).toBe("GLMAdapter");
     expect(resolveModelAdapter("grok-3").getName()).toBe("GrokAdapter");
@@ -531,7 +531,7 @@ describe("CodexAdapter", () => {
   });
 
   test("resolveModelAdapter selects CodexAdapter for codex-mini", async () => {
-    const { resolveModelAdapter } = await import("./adapters/adapter-manager.js");
+    const { resolveModelAdapter } = await import("./providers/provider-registry.js");
     expect(resolveModelAdapter("codex-mini").getName()).toBe("CodexAdapter");
   });
 });

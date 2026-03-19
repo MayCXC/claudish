@@ -11,7 +11,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { GLMAdapter } from "./adapters/glm-adapter.js";
-import { resolveModelAdapter } from "./adapters/adapter-manager.js";
+import { resolveModelAdapter } from "./providers/provider-registry.js";
 import { LiteLLMAdapter } from "./adapters/litellm-adapter.js";
 import { DefaultAdapter } from "./adapters/base-adapter.js";
 

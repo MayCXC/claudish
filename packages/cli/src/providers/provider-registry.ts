@@ -347,6 +347,7 @@ export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | nu
 
   const handler = new ComposedHandler(t, ctx.targetModel, ctx.modelName, ctx.port, {
     adapter: a,
+    modelAdapter: resolveModelAdapter(ctx.modelName),
     ...ctx.sharedOpts,
   });
   log(`[Proxy] Created ${def.displayName} handler (${def.transport}): ${ctx.modelName}`);
@@ -358,9 +359,10 @@ export function createOpenRouterHandler(
   modelId: string, apiKey: string, port: number,
   opts: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode">,
 ): ModelHandler {
+  const ma = resolveModelAdapter(modelId);
   const transport = new OpenRouterProvider(apiKey);
-  const adapter = new OpenRouterAdapter(modelId, resolveModelAdapter(modelId));
-  return new ComposedHandler(transport, modelId, modelId, port, { adapter, ...opts });
+  const adapter = new OpenRouterAdapter(modelId, ma);
+  return new ComposedHandler(transport, modelId, modelId, port, { adapter, modelAdapter: ma, ...opts });
 }
 
 /** Create a handler for a resolved local provider. */
@@ -368,14 +370,13 @@ export function createLocalHandler(
   resolved: ResolvedProvider, port: number,
   opts: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode" | "summarizeTools">,
 ): ModelHandler {
+  const ma = resolveModelAdapter(resolved.modelName);
   const transport = new LocalTransport(resolved.provider, resolved.modelName, {
     concurrency: resolved.concurrency,
   });
-  const adapter = new LocalModelAdapter(
-    resolved.modelName, resolved.provider.name, resolveModelAdapter(resolved.modelName),
-  );
+  const adapter = new LocalModelAdapter(resolved.modelName, resolved.provider.name, ma);
   return new ComposedHandler(transport, resolved.modelName, resolved.modelName, port, {
-    adapter, tokenStrategy: "local", ...opts,
+    adapter, modelAdapter: ma, tokenStrategy: "local", ...opts,
   });
 }
 
@@ -384,13 +385,12 @@ export function createUrlLocalHandler(
   urlParsed: UrlParsedModel, port: number,
   opts: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode" | "summarizeTools">,
 ): ModelHandler {
+  const ma = resolveModelAdapter(urlParsed.modelName);
   const providerConfig = createUrlProvider(urlParsed);
   const transport = new LocalTransport(providerConfig, urlParsed.modelName);
-  const adapter = new LocalModelAdapter(
-    urlParsed.modelName, providerConfig.name, resolveModelAdapter(urlParsed.modelName),
-  );
+  const adapter = new LocalModelAdapter(urlParsed.modelName, providerConfig.name, ma);
   return new ComposedHandler(transport, urlParsed.modelName, urlParsed.modelName, port, {
-    adapter, tokenStrategy: "local", ...opts,
+    adapter, modelAdapter: ma, tokenStrategy: "local", ...opts,
   });
 }
 

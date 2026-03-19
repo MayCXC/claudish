@@ -113,7 +113,7 @@ transport.overrideStreamFormat() ?? modelAdapter.getStreamFormat() ?? providerAd
 ```
 
 **Adding a new provider**: Add one entry to `BUILTIN_PROVIDERS` in `providers/provider-definitions.ts` with a `transport` field.
-**Adding a new model**: Create a ModelTranslator adapter, register in `adapters/adapter-manager.ts`.
+**Adding a new model**: Create a ModelTranslator adapter, register in `resolveModelAdapter()` in `providers/provider-registry.ts`.
 **Verifying wiring**: `claudish --probe <model>` shows the full adapter composition.
 
 ### Stream Parsers
