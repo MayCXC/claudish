@@ -1388,7 +1388,7 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
         declaredStreamFormat = "openai-sse";
       }
 
-      // Get model translator via resolveModelAdapter
+      // Get model translator for metadata
       const { resolveModelAdapter } = await import("./providers/provider-registry.js");
       const modelTranslator = resolveModelAdapter(modelName);
       const modelTranslatorName = modelTranslator.getName();
@@ -1400,12 +1400,8 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
       };
       const transportOverride = TRANSPORT_OVERRIDES[providerName] || null;
 
-      // Effective stream format: transport override wins, then model translator format (if not default),
-      // then the format adapter's declared format
-      const modelTranslatorFormat =
-        modelTranslatorName !== "DefaultAdapter" ? modelTranslator.getStreamFormat() : null;
-      const effectiveStreamFormat =
-        transportOverride || modelTranslatorFormat || declaredStreamFormat;
+      // Effective stream format: transport override wins, then format adapter's declared format
+      const effectiveStreamFormat = transportOverride || declaredStreamFormat;
 
       wiring = {
         formatAdapter: formatAdapterName,

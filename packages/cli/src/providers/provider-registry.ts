@@ -305,7 +305,10 @@ function resolveFormatAdapter(
   switch (def.transport) {
     case "gemini":
     case "gemini-oauth":  return new GeminiAdapter(modelName);
-    case "openai":        return new OpenAIAdapter(modelName);
+    case "openai": {
+      if (modelName.toLowerCase().includes("codex")) return new CodexAdapter(modelName);
+      return new OpenAIAdapter(modelName);
+    }
     case "anthropic":     return new AnthropicPassthroughAdapter(modelName, provider.name);
     case "ollamacloud":   return new OllamaCloudAdapter(modelName);
     case "litellm":       return provider.baseUrl ? new LiteLLMAdapter(modelName, provider.baseUrl) : null;

@@ -624,11 +624,9 @@ export class ComposedHandler implements ModelHandler {
 
     // Stream format priority:
     //   1. Transport override (aggregators like LiteLLM/OpenRouter normalize server-side)
-    //   2. Model adapter (CodexAdapter → openai-responses-sse; overrides provider adapter)
-    //   3. Provider adapter (explicit adapter passed to ComposedHandler)
+    //   2. Format adapter (declares the wire format for its target API)
     const streamFormat =
       this.provider.overrideStreamFormat?.() ??
-      this.modelAdapter?.getStreamFormat() ??
       this.getFormatAdapter().getStreamFormat();
     switch (streamFormat) {
       case "openai-sse":
