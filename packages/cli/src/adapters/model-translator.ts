@@ -24,6 +24,9 @@ export interface ModelTranslator {
   /** Maximum tool name length, or null if unlimited */
   getToolNameLimit(): number | null;
 
+  /** Stream format this model's API returns (e.g., codex uses openai-responses-sse) */
+  getStreamFormat(): import("../providers/transport/types.js").StreamFormat;
+
   /** Check if this translator handles the given model ID */
   shouldHandle(modelId: string): boolean;
 

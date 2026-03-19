@@ -20,6 +20,7 @@ import type { Context } from "hono";
 import type { ModelHandler } from "./types.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import { DefaultAdapter, type BaseModelAdapter } from "../adapters/base-adapter.js";
+import type { ModelTranslator } from "../adapters/model-translator.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
@@ -49,7 +50,7 @@ export interface ComposedHandlerOptions {
   /** Format adapter (Layer 1): wire format translation (messages, tools, payload) */
   formatAdapter?: BaseModelAdapter;
   /** Model adapter (Layer 2): model-specific quirks (context window, vision, prepareRequest) */
-  modelAdapter?: BaseModelAdapter;
+  modelAdapter?: ModelTranslator;
   /** Tool schemas for validation (enables buffered tool call validation) */
   toolSchemas?: any[];
   /** Token tracking strategy */
@@ -67,7 +68,7 @@ export interface ComposedHandlerOptions {
 export class ComposedHandler implements ModelHandler {
   private provider: ProviderTransport;
   private formatAdapter?: BaseModelAdapter;
-  private modelAdapter?: BaseModelAdapter;
+  private modelAdapter?: ModelTranslator;
   /** Effective adapter: formatAdapter wins, then modelAdapter, then DefaultAdapter */
   private resolvedAdapter: BaseModelAdapter;
   private middlewareManager: MiddlewareManager;
