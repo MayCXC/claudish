@@ -4,39 +4,21 @@ import { serve } from "@hono/node-server";
 import { log, logStderr, isLoggingEnabled } from "./logger.js";
 import type { ProxyServer } from "./types.js";
 import { NativeHandler } from "./handlers/native-handler.js";
-import { OpenRouterProvider } from "./providers/transport/openrouter.js";
-import { OpenRouterAdapter } from "./adapters/openrouter-adapter.js";
-import { LocalTransport } from "./providers/transport/local.js";
-import { LocalModelAdapter } from "./adapters/local-adapter.js";
-import { resolveModelAdapter } from "./adapters/adapter-manager.js";
-import { GeminiApiKeyProvider } from "./providers/transport/gemini-apikey.js";
-import { GeminiCodeAssistProvider } from "./providers/transport/gemini-codeassist.js";
-import { GeminiAdapter } from "./adapters/gemini-adapter.js";
-import { VertexOAuthProvider, parseVertexModel } from "./providers/transport/vertex-oauth.js";
-import { DefaultAdapter } from "./adapters/base-adapter.js";
 import { PoeProvider } from "./providers/transport/poe.js";
 import type { ModelHandler } from "./handlers/types.js";
 import { ComposedHandler, type ComposedHandlerOptions } from "./handlers/composed-handler.js";
-import { LiteLLMProvider } from "./providers/transport/litellm.js";
-import { LiteLLMAdapter } from "./adapters/litellm-adapter.js";
-import { OpenAIProvider } from "./providers/transport/openai.js";
-import { OpenAIAdapter } from "./adapters/openai-adapter.js";
-import { AnthropicCompatProvider } from "./providers/transport/anthropic-compat.js";
-import { AnthropicPassthroughAdapter } from "./adapters/anthropic-passthrough-adapter.js";
-import { OllamaCloudProvider } from "./providers/transport/ollamacloud.js";
-import { OllamaCloudAdapter } from "./adapters/ollamacloud-adapter.js";
 import {
   resolveProvider,
   parseUrlModel,
-  createUrlProvider,
-} from "./providers/provider-registry.js";
-import { parseModelSpec } from "./providers/model-parser.js";
-import {
   resolveRemoteProvider,
   validateRemoteProviderApiKey,
   getRegisteredRemoteProviders,
+  createHandlerForProvider,
+  createOpenRouterHandler,
+  createLocalHandler,
+  createUrlLocalHandler,
 } from "./providers/provider-registry.js";
-import { getVertexConfig, validateVertexOAuthConfig } from "./auth/vertex-auth.js";
+import { parseModelSpec } from "./providers/model-parser.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import { fetchLiteLLMModels } from "./model-loader.js";
@@ -53,7 +35,6 @@ import {
   matchRoutingRule,
   buildRoutingChain,
 } from "./providers/routing-rules.js";
-import { createHandlerForProvider } from "./providers/provider-registry.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -90,12 +71,9 @@ export async function createProxyServer(
     const modelId = targetModel.includes("@") ? parsed.model : targetModel;
 
     if (!openRouterHandlers.has(modelId)) {
-      const orProvider = new OpenRouterProvider(openrouterApiKey || "");
-      const orAdapter = new OpenRouterAdapter(modelId, resolveModelAdapter(modelId));
       openRouterHandlers.set(
         modelId,
-        new ComposedHandler(orProvider, modelId, modelId, port, {
-          adapter: orAdapter,
+        createOpenRouterHandler(modelId, openrouterApiKey || "", port, {
           isInteractive: options.isInteractive,
           invocationMode,
         })
@@ -146,13 +124,7 @@ export async function createProxyServer(
     // Check for prefix-based local provider (ollama/, lmstudio/, etc.)
     const resolved = resolveProvider(targetModel);
     if (resolved) {
-      const provider = new LocalTransport(resolved.provider, resolved.modelName, {
-        concurrency: resolved.concurrency,
-      });
-      const adapter = new LocalModelAdapter(resolved.modelName, resolved.provider.name, resolveModelAdapter(resolved.modelName));
-      const handler = new ComposedHandler(provider, resolved.modelName, resolved.modelName, port, {
-        adapter,
-        tokenStrategy: "local",
+      const handler = createLocalHandler(resolved, port, {
         summarizeTools: options.summarizeTools,
         isInteractive: options.isInteractive,
         invocationMode,
@@ -167,22 +139,11 @@ export async function createProxyServer(
     // Check for URL-based model (http://localhost:11434/llama3)
     const urlParsed = parseUrlModel(targetModel);
     if (urlParsed) {
-      const providerConfig = createUrlProvider(urlParsed);
-      const provider = new LocalTransport(providerConfig, urlParsed.modelName);
-      const adapter = new LocalModelAdapter(urlParsed.modelName, providerConfig.name, resolveModelAdapter(urlParsed.modelName));
-      const handler = new ComposedHandler(
-        provider,
-        urlParsed.modelName,
-        urlParsed.modelName,
-        port,
-        {
-          adapter,
-          tokenStrategy: "local",
-          summarizeTools: options.summarizeTools,
-          isInteractive: options.isInteractive,
-          invocationMode,
-        }
-      );
+      const handler = createUrlLocalHandler(urlParsed, port, {
+        summarizeTools: options.summarizeTools,
+        isInteractive: options.isInteractive,
+        invocationMode,
+      });
       localProviderHandlers.set(targetModel, handler);
       log(
         `[Proxy] Created URL-based local provider handler: ${urlParsed.baseUrl}/${urlParsed.modelName}`

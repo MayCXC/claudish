@@ -227,6 +227,11 @@ import { LiteLLMAdapter } from "../adapters/litellm-adapter.js";
 import { VertexOAuthProvider, parseVertexModel } from "./transport/vertex-oauth.js";
 import { DefaultAdapter } from "../adapters/base-adapter.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
+import { resolveModelAdapter } from "../adapters/adapter-manager.js";
+import { OpenRouterProvider } from "./transport/openrouter.js";
+import { OpenRouterAdapter } from "../adapters/openrouter-adapter.js";
+import { LocalTransport } from "./transport/local.js";
+import { LocalModelAdapter } from "../adapters/local-adapter.js";
 import { log, logStderr } from "../logger.js";
 
 export type { ProfileContext, ProviderProfile };
@@ -316,6 +321,47 @@ export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | nu
   });
   log(`[Proxy] Created ${def.displayName} handler (${def.transport}): ${ctx.modelName}`);
   return handler;
+}
+
+/** Create a handler for an OpenRouter model. */
+export function createOpenRouterHandler(
+  modelId: string, apiKey: string, port: number,
+  opts: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode">,
+): ModelHandler {
+  const transport = new OpenRouterProvider(apiKey);
+  const adapter = new OpenRouterAdapter(modelId, resolveModelAdapter(modelId));
+  return new ComposedHandler(transport, modelId, modelId, port, { adapter, ...opts });
+}
+
+/** Create a handler for a resolved local provider. */
+export function createLocalHandler(
+  resolved: ResolvedProvider, port: number,
+  opts: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode" | "summarizeTools">,
+): ModelHandler {
+  const transport = new LocalTransport(resolved.provider, resolved.modelName, {
+    concurrency: resolved.concurrency,
+  });
+  const adapter = new LocalModelAdapter(
+    resolved.modelName, resolved.provider.name, resolveModelAdapter(resolved.modelName),
+  );
+  return new ComposedHandler(transport, resolved.modelName, resolved.modelName, port, {
+    adapter, tokenStrategy: "local", ...opts,
+  });
+}
+
+/** Create a handler for a URL-based local model. */
+export function createUrlLocalHandler(
+  urlParsed: UrlParsedModel, port: number,
+  opts: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode" | "summarizeTools">,
+): ModelHandler {
+  const providerConfig = createUrlProvider(urlParsed);
+  const transport = new LocalTransport(providerConfig, urlParsed.modelName);
+  const adapter = new LocalModelAdapter(
+    urlParsed.modelName, providerConfig.name, resolveModelAdapter(urlParsed.modelName),
+  );
+  return new ComposedHandler(transport, urlParsed.modelName, urlParsed.modelName, port, {
+    adapter, tokenStrategy: "local", ...opts,
+  });
 }
 
 // Backwards compatibility: PROVIDER_PROFILES for tests that check table completeness
