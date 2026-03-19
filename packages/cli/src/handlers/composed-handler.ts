@@ -20,7 +20,7 @@ import type { Context } from "hono";
 import type { ModelHandler } from "./types.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import type { BaseModelAdapter } from "../adapters/base-adapter.js";
-import { resolveModelAdapter } from "../adapters/adapter-manager.js";
+import { resolveModelAdapter } from "../providers/provider-registry.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";

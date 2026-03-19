@@ -1389,7 +1389,7 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
       }
 
       // Get model translator via resolveModelAdapter
-      const { resolveModelAdapter } = await import("./adapters/adapter-manager.js");
+      const { resolveModelAdapter } = await import("./providers/provider-registry.js");
       const modelTranslator = resolveModelAdapter(modelName);
       const modelTranslatorName = modelTranslator.getName();
 

@@ -211,7 +211,7 @@ export interface ProviderProfile {
   createHandler(ctx: ProfileContext): ModelHandler | null;
 }
 import type { ProviderTransport } from "./transport/types.js";
-import type { BaseModelAdapter } from "../adapters/base-adapter.js";
+import { BaseModelAdapter, DefaultAdapter } from "../adapters/base-adapter.js";
 import { ComposedHandler } from "../handlers/composed-handler.js";
 import { GeminiApiKeyProvider } from "./transport/gemini-apikey.js";
 import { GeminiCodeAssistProvider } from "./transport/gemini-codeassist.js";
@@ -225,9 +225,13 @@ import { OllamaCloudAdapter } from "../adapters/ollamacloud-adapter.js";
 import { LiteLLMProvider } from "./transport/litellm.js";
 import { LiteLLMAdapter } from "../adapters/litellm-adapter.js";
 import { VertexOAuthProvider, parseVertexModel } from "./transport/vertex-oauth.js";
-import { DefaultAdapter } from "../adapters/base-adapter.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
-import { resolveModelAdapter } from "../adapters/adapter-manager.js";
+import { GrokAdapter } from "../adapters/grok-adapter.js";
+import { CodexAdapter } from "../adapters/codex-adapter.js";
+import { QwenAdapter } from "../adapters/qwen-adapter.js";
+import { MiniMaxAdapter } from "../adapters/minimax-adapter.js";
+import { DeepSeekAdapter } from "../adapters/deepseek-adapter.js";
+import { GLMAdapter } from "../adapters/glm-adapter.js";
 import { OpenRouterProvider } from "./transport/openrouter.js";
 import { OpenRouterAdapter } from "../adapters/openrouter-adapter.js";
 import { LocalTransport } from "./transport/local.js";
@@ -235,6 +239,32 @@ import { LocalModelAdapter } from "../adapters/local-adapter.js";
 import { log, logStderr } from "../logger.js";
 
 export type { ProfileContext, ProviderProfile };
+
+/**
+ * Resolve the correct model-specific adapter for a given model ID.
+ * Iterates registered adapters in priority order; the first whose
+ * shouldHandle() returns true wins. Falls back to DefaultAdapter.
+ */
+export function resolveModelAdapter(modelId: string): BaseModelAdapter {
+  // Priority order matters: CodexAdapter must come before OpenAIAdapter
+  const adapters: BaseModelAdapter[] = [
+    new GrokAdapter(modelId),
+    new GeminiAdapter(modelId),
+    new CodexAdapter(modelId),
+    new OpenAIAdapter(modelId),
+    new QwenAdapter(modelId),
+    new MiniMaxAdapter(modelId),
+    new DeepSeekAdapter(modelId),
+    new GLMAdapter(modelId),
+  ];
+
+  for (const adapter of adapters) {
+    if (adapter.shouldHandle(modelId)) {
+      return adapter;
+    }
+  }
+  return new DefaultAdapter(modelId);
+}
 
 /** Resolve transport instance from definition. */
 function resolveTransport(
