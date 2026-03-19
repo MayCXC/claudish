@@ -8,6 +8,7 @@ import { OpenRouterProvider } from "./providers/transport/openrouter.js";
 import { OpenRouterAdapter } from "./adapters/openrouter-adapter.js";
 import { LocalTransport } from "./providers/transport/local.js";
 import { LocalModelAdapter } from "./adapters/local-adapter.js";
+import { resolveModelAdapter } from "./adapters/adapter-manager.js";
 import { GeminiApiKeyProvider } from "./providers/transport/gemini-apikey.js";
 import { GeminiCodeAssistProvider } from "./providers/transport/gemini-codeassist.js";
 import { GeminiAdapter } from "./adapters/gemini-adapter.js";
@@ -90,7 +91,7 @@ export async function createProxyServer(
 
     if (!openRouterHandlers.has(modelId)) {
       const orProvider = new OpenRouterProvider(openrouterApiKey || "");
-      const orAdapter = new OpenRouterAdapter(modelId);
+      const orAdapter = new OpenRouterAdapter(modelId, resolveModelAdapter(modelId));
       openRouterHandlers.set(
         modelId,
         new ComposedHandler(orProvider, modelId, modelId, port, {
@@ -148,7 +149,7 @@ export async function createProxyServer(
       const provider = new LocalTransport(resolved.provider, resolved.modelName, {
         concurrency: resolved.concurrency,
       });
-      const adapter = new LocalModelAdapter(resolved.modelName, resolved.provider.name);
+      const adapter = new LocalModelAdapter(resolved.modelName, resolved.provider.name, resolveModelAdapter(resolved.modelName));
       const handler = new ComposedHandler(provider, resolved.modelName, resolved.modelName, port, {
         adapter,
         tokenStrategy: "local",
@@ -168,7 +169,7 @@ export async function createProxyServer(
     if (urlParsed) {
       const providerConfig = createUrlProvider(urlParsed);
       const provider = new LocalTransport(providerConfig, urlParsed.modelName);
-      const adapter = new LocalModelAdapter(urlParsed.modelName, providerConfig.name);
+      const adapter = new LocalModelAdapter(urlParsed.modelName, providerConfig.name, resolveModelAdapter(urlParsed.modelName));
       const handler = new ComposedHandler(
         provider,
         urlParsed.modelName,

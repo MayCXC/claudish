@@ -10,18 +10,16 @@
  * - Tool choice mapping from Claude format
  */
 
-import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
-import { resolveModelAdapter } from "./adapter-manager.js";
+import { BaseModelAdapter, DefaultAdapter, type AdapterResult } from "./base-adapter.js";
 import { removeUriFormat } from "../transform.js";
 import { log } from "../logger.js";
 
 export class OpenRouterAdapter extends BaseModelAdapter {
   private innerAdapter: BaseModelAdapter;
 
-  constructor(modelId: string) {
+  constructor(modelId: string, innerAdapter?: BaseModelAdapter) {
     super(modelId);
-
-    this.innerAdapter = resolveModelAdapter(modelId);
+    this.innerAdapter = innerAdapter ?? new DefaultAdapter(modelId);
   }
 
   /** Synchronous reasoning support check via model ID patterns */

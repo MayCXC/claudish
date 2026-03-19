@@ -11,8 +11,7 @@
  * - MLX simple format for message conversion
  */
 
-import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
-import { resolveModelAdapter } from "./adapter-manager.js";
+import { BaseModelAdapter, DefaultAdapter, type AdapterResult } from "./base-adapter.js";
 import { log } from "../logger.js";
 
 interface SamplingParams {
@@ -27,11 +26,10 @@ export class LocalModelAdapter extends BaseModelAdapter {
   private innerAdapter: BaseModelAdapter;
   private providerName: string;
 
-  constructor(modelId: string, providerName: string) {
+  constructor(modelId: string, providerName: string, innerAdapter?: BaseModelAdapter) {
     super(modelId);
     this.providerName = providerName;
-
-    this.innerAdapter = resolveModelAdapter(modelId);
+    this.innerAdapter = innerAdapter ?? new DefaultAdapter(modelId);
   }
 
   // ─── Text processing delegates to inner adapter ───────────────────
