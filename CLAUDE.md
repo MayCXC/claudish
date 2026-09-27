@@ -21,6 +21,7 @@ lives in `ROADMAP.md`.
   silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux
 - `first-party.md` — what Claude Code gates on trusting its base URL, why a `--monitor` session can be given that trust, and what the proxy then owes each request; read before editing native forwarding
 - `daemon-mode.md` — `claudish daemon` as the service manager of Claude Code's supervisor: what `claude daemon run` does per origin, the exit-70 restart and its reinstall wait, one signal through a separate process group, and why sessions reach the proxy only through a settings `env` block; read before editing `daemon-command.ts`
+- `settings-env.md` — a settings `env` block overwrites the environment claudish gives Claude Code; why a proxy-auth launch is marked host-managed and withholds first-party trust, and why a launch that keeps the user's login is not; read before changing the child's environment
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
