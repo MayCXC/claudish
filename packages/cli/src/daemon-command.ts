@@ -39,8 +39,14 @@
  * supervisor here therefore reaches no session by itself: it is the value a
  * client's own must equal for Claude Code to forward it.
  *
+ * With `--mcp-port`, this process also serves claudish's MCP tools over
+ * Streamable HTTP (`startMcpHttpServer`), so every session, the supervisor's and a
+ * terminal's alike, reaches one MCP server through a `"type": "http"` server
+ * entry instead of starting its own `claudish --mcp`. It listens before the
+ * supervisor starts, since a session connects to its MCP servers as it starts.
+ *
  * Usage:
- *   claudish daemon --port <n> [-- <claude daemon run options>]
+ *   claudish daemon --port <n> [--mcp-port <n>] [-- <claude daemon run options>]
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
@@ -200,6 +206,8 @@ async function waitForRunnableBinary(
 
 export interface DaemonArgs {
   port?: number;
+  /** `--mcp-port`: serve the MCP tools over HTTP on this port as well. */
+  mcpPort?: number;
   /** `--help` or `-h` before `--`: print the usage and start nothing. */
   help?: boolean;
   /** Everything after `--`, for `claude daemon run` itself. */
@@ -227,17 +235,25 @@ export function parseDaemonArgs(args: string[]): DaemonArgs {
       break;
     }
     if (a === "--port" || a === "-p") {
-      const v = args[++i];
-      const n = Number(v);
-      if (!Number.isInteger(n) || n <= 0 || n > 65535) {
-        throw new Error(`--port must be an integer 1-65535 (got ${v ?? "nothing"})`);
-      }
-      out.port = n;
+      out.port = parsePort("--port", args[++i]);
+    } else if (a === "--mcp-port") {
+      out.mcpPort = parsePort("--mcp-port", args[++i]);
     } else {
       throw new Error(`unknown argument ${a}; options for claude daemon run go after --`);
     }
   }
+  if (out.mcpPort !== undefined && out.mcpPort === out.port) {
+    throw new Error("--mcp-port must differ from --port");
+  }
   return out;
+}
+
+function parsePort(flag: string, v: string | undefined): number {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0 || n > 65535) {
+    throw new Error(`${flag} must be an integer 1-65535 (got ${v ?? "nothing"})`);
+  }
+  return n;
 }
 
 /**
@@ -416,7 +432,7 @@ export function superviseClaudeDaemon(options: SupervisorOptions): Supervision {
   };
 }
 
-const DAEMON_USAGE = `Usage: claudish daemon --port <n> [-- <claude daemon run options>]
+const DAEMON_USAGE = `Usage: claudish daemon --port <n> [--mcp-port <n>] [-- <claude daemon run options>]
 
 Runs Claude Code's supervisor, \`claude daemon run --origin service\`, as the
 child of a --monitor proxy on port <n>, so background sessions and agent view
@@ -431,8 +447,13 @@ Sessions reach the proxy only through a settings file's env block:
   "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:<n>" }
 Add "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1" to trust it as Anthropic's API.
 
+With --mcp-port, claudish's MCP tools are served over HTTP as well, one server
+for every session; declare it in place of \`claudish --mcp\`:
+  "claudish": { "type": "http", "url": "http://127.0.0.1:<mcp-port>/mcp" }
+
 Options:
   -p, --port <n>   Port for the proxy (required)
+  --mcp-port <n>   Port for the MCP server
   -h, --help       Show this help
   -- <options>     Passed to \`claude daemon run\`, e.g. -- --log-file ~/daemon.log
 
@@ -476,6 +497,15 @@ export async function daemonCommand(args: string[]): Promise<void> {
   log(`proxy listening on ${proxy.url}`);
   log(`point sessions at it in a settings file: "env": { "ANTHROPIC_BASE_URL": "${proxy.url}" }`);
 
+  const mcp =
+    daemonArgs.mcpPort === undefined
+      ? null
+      : await (await import("./mcp-server.js")).startMcpHttpServer(daemonArgs.mcpPort);
+  if (mcp) {
+    log(`mcp server listening on ${mcp.url}`);
+    log(`declare it for sessions: "claudish": { "type": "http", "url": "${mcp.url}" }`);
+  }
+
   const supervision = superviseClaudeDaemon({
     resolveBinary: findClaudeBinary,
     argv: supervisorArgv(daemonArgs.supervisorArgs),
@@ -498,6 +528,7 @@ export async function daemonCommand(args: string[]): Promise<void> {
   process.on("exit", () => supervision.stop("SIGTERM"));
 
   const code = await supervision.exitCode;
+  await mcp?.close();
   await proxy.shutdown();
   process.exit(code);
 }

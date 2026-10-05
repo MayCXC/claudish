@@ -8,16 +8,28 @@
  * Routes through the same proxy engine as the CLI — same auto-routing, fallback chains,
  * custom routing rules, and provider transports.
  *
- * Run with: claudish --mcp (stdio transport)
+ * Run with: claudish --mcp (stdio transport, one server per session), or as part of
+ * `claudish daemon --mcp-port <n>` (Streamable HTTP, one server for every session;
+ * `startMcpHttpServer`)
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import {
+  CallToolRequestSchema,
+  ListRootsResultSchema,
+  ListToolsRequestSchema,
+  RootsListChangedNotificationSchema,
+  type ServerNotification,
+  type ServerRequest,
+} from "@modelcontextprotocol/sdk/types.js";
 import { config } from "dotenv";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
@@ -54,6 +66,7 @@ import {
   contractMeta,
   ensureSwept,
   installPaneShutdownHooks,
+  reapAllPanes,
   sockRootFor,
 } from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
@@ -175,9 +188,18 @@ interface ToolCallContext {
    * The directory the calling session works in. Paths a tool is given resolve
    * against it, the children it starts run in it, and the routes it decides come
    * from that directory's project rules. On stdio it is this process's working
-   * directory, the session's own, since the harness starts the server there.
+   * directory, the session's own, since the harness starts the server there; over
+   * HTTP it is the first root the client lists (`readRootsDirectory`).
    */
   workingDirectory: string;
+  /**
+   * The Claude Code conversation that made the call, recorded as a run's
+   * `parentClaudeSessionId`. On stdio it is `parentSessionForCall`'s read, since the
+   * harness that started the server is the caller. Over HTTP it is `undefined`: no
+   * client started the server, so the host session record and the environment that
+   * read consults describe whoever launched it, not the session calling.
+   */
+  parentSession: () => Promise<string | undefined>;
 }
 
 interface ToolDefinition {
@@ -1729,9 +1751,7 @@ function defineTools(
             // completion push is a channel frame Claude Code drops without
             // `--channels`. Written BEFORE any pane exists; a throw here fails
             // the call with nothing started.
-            const parentClaudeSessionId = await parentSessionForCall({
-              hostPid: sessionManager.hostPid,
-            });
+            const parentClaudeSessionId = await ctx.parentSession();
             const monitorRecord = sessionManager.recordTeamRun({
               teamPath: resolved,
               slots: models.length,
@@ -2087,10 +2107,9 @@ function defineTools(
         });
 
         // The conversation live in the calling window, from the host's session
-        // record: one read at call time, no wait. See channel/parent-session.ts.
-        const parentClaudeSessionId = await parentSessionForCall({
-          hostPid: sessionManager.hostPid,
-        });
+        // record on stdio: one read at call time, no wait. See
+        // ToolCallContext.parentSession and channel/parent-session.ts.
+        const parentClaudeSessionId = await ctx.parentSession();
 
         // Reserves the pane, writes prompt.md and spawn.json, then starts the pane; no
         // boot wait.
@@ -2424,21 +2443,38 @@ export function mapEventToTaskStatus(event: string): TaskStatus {
 
 // ─── Server Setup ────────────────────────────────────────────────────────────
 
-async function main() {
+/** The params of one `notifications/claude/channel` frame. */
+type ChannelFrame = {
+  content: string;
+  meta: Record<string, string>;
+};
+
+/**
+ * What every MCP client of this process shares: the tools and the channel session
+ * manager behind them, with the routing proxies and the live team runs the tools
+ * reach as module state. The stdio server answers its one client from it, the HTTP
+ * server (`startMcpHttpServer`) every client it has.
+ */
+interface McpRuntime {
+  toolMode: string;
+  enabledTools: ToolDefinition[];
+  toolMap: Map<string, ToolDefinition>;
+  progressIntervalMs: number;
+  sessionManager: SessionManager;
+  /** Whether channel frames reach a client, which is what declaring the capability promises. */
+  channelFrames: boolean;
+}
+
+type ToolRequestExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+/**
+ * The runtime, with `sendFrame` delivering a channel frame to the client. Null
+ * where no client takes frames (over HTTP): the channel tools still answer, and
+ * `list_sessions`, `get_output` and `get_diagnostics` report what the frames would.
+ */
+function createRuntime(sendFrame: ((frame: ChannelFrame) => Promise<void>) | null): McpRuntime {
   const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
   const enabledGroups = resolveToolGroups(toolMode);
-
-  // Create server with channel capability
-  const server = new Server(
-    { name: "claudish", version: "9.0.0" },
-    {
-      capabilities: {
-        ...(enabledGroups.has("channel") ? { experimental: { "claude/channel": {} } } : {}),
-        tools: {},
-      },
-      instructions: INSTRUCTIONS,
-    }
-  );
 
   // Create session manager with channel notification bridge.
   // The bridge translates SessionManager events into MCP notifications.
@@ -2454,6 +2490,7 @@ async function main() {
   // See: ai-docs/sessions/.../sep-1686-migration-schema.md
   const sessionManager = new SessionManager({
     onStateChange: wrapStateChange((sessionId, event) => {
+      if (!sendFrame) return;
       // `timeout` is here because it used to arrive AS `failed` — the wire had
       // no timeout event until EVENT_TO_TASK_STATUS learned to project one — and
       // dropping the hint when the event split in two would have been a silent
@@ -2463,23 +2500,20 @@ async function main() {
         event.type === "failed" || event.type === "timeout"
           ? `${event.content}\n\nCall get_diagnostics with session_id: "${sessionId}" for the final screen, the upstream error bodies and the transcript path. To report it, use the report_error tool with error_type: "provider_failure" and model: "${event.model}".`
           : event.content;
-      const result = server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: notificationContent,
-          meta: {
-            session_id: sessionId,
-            event: event.type,
-            model: event.model,
-            elapsed_seconds: String(event.elapsedSeconds),
-            // SEP-1686 forward-compat fields (additive, do not break consumers
-            // of the existing fields above):
-            task_id: sessionId,
-            status: mapEventToTaskStatus(event.type),
-            created_at: event.createdAt,
-            last_updated_at: new Date().toISOString(),
-            ...event.extraMeta,
-          },
+      const result = sendFrame({
+        content: notificationContent,
+        meta: {
+          session_id: sessionId,
+          event: event.type,
+          model: event.model,
+          elapsed_seconds: String(event.elapsedSeconds),
+          // SEP-1686 forward-compat fields (additive, do not break consumers
+          // of the existing fields above):
+          task_id: sessionId,
+          status: mapEventToTaskStatus(event.type),
+          created_at: event.createdAt,
+          last_updated_at: new Date().toISOString(),
+          ...event.extraMeta,
         },
       });
       watchNotificationResult(result, { sessionId, eventType: event.type });
@@ -2490,26 +2524,23 @@ async function main() {
   // actually being declared — emitting a channel frame the client never
   // registered for is silently dropped, and `team` still writes status.txt
   // regardless, so there is always a visible path.
-  const channelEnabled = enabledGroups.has("channel");
+  const channelEnabled = sendFrame !== null && enabledGroups.has("channel");
   const notifyChannel: ChannelNotifier = (p) => {
-    if (!channelEnabled) return;
+    if (!channelEnabled || !sendFrame) return;
     try {
-      const result = server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: p.content,
-          meta: {
-            // meta keys must match [a-zA-Z0-9_]+ — Claude Code silently drops
-            // keys containing hyphens or other characters.
-            session_id: p.sessionId,
-            event: p.event,
-            model: p.model,
-            elapsed_seconds: String(Math.round(p.elapsedSeconds)),
-            task_id: p.sessionId,
-            status: mapEventToTaskStatus(p.event),
-            created_at: p.createdAt,
-            last_updated_at: new Date().toISOString(),
-          },
+      const result = sendFrame({
+        content: p.content,
+        meta: {
+          // meta keys must match [a-zA-Z0-9_]+: Claude Code silently drops
+          // keys containing hyphens or other characters.
+          session_id: p.sessionId,
+          event: p.event,
+          model: p.model,
+          elapsed_seconds: String(Math.round(p.elapsedSeconds)),
+          task_id: p.sessionId,
+          status: mapEventToTaskStatus(p.event),
+          created_at: p.createdAt,
+          last_updated_at: new Date().toISOString(),
         },
       });
       watchNotificationResult(result, { sessionId: p.sessionId, eventType: p.event });
@@ -2518,20 +2549,81 @@ async function main() {
     }
   };
 
-  // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
+  // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per runtime rather
   // than per call, so a long-lived session cannot change its behaviour mid-flight.
   const progressIntervalMs = resolveProgressIntervalMs();
 
   // Build tool registry
   const allTools = defineTools(sessionManager, notifyChannel);
   const enabledTools = allTools.filter((t) => enabledGroups.has(t.group));
-  const toolMap = new Map(enabledTools.map((t) => [t.name, t]));
+  return {
+    toolMode,
+    enabledTools,
+    toolMap: new Map(enabledTools.map((t) => [t.name, t])),
+    progressIntervalMs,
+    sessionManager,
+    channelFrames: channelEnabled,
+  };
+}
 
-  console.error(`[claudish] MCP server started (tools: ${toolMode}, ${enabledTools.length} tools)`);
+/**
+ * The calling session's working directory over HTTP, where this process's own is
+ * not the session's: the first `file:` root its client lists. Claude Code declares
+ * roots and lists the session's working directory (2.1.286, measured with a probe
+ * server); a client that declares none, or lists no `file:` root, leaves this
+ * process's. Asked on the tool call's own stream, which needs no standalone one.
+ * https://modelcontextprotocol.io/specification/2025-06-18/client/roots
+ */
+async function readRootsDirectory(server: Server, extra: ToolRequestExtra): Promise<string> {
+  if (!server.getClientCapabilities()?.roots) return process.cwd();
+  const { roots } = await extra.sendRequest({ method: "roots/list" }, ListRootsResultSchema);
+  const root = roots.find((r) => r.uri.startsWith("file:"));
+  return root ? fileURLToPath(root.uri) : process.cwd();
+}
+
+/**
+ * One client's server over the shared runtime. Its tool calls run in the calling
+ * session's directory: on stdio this process's working directory, where the
+ * harness starts the server; over HTTP the client's root (`readRootsDirectory`),
+ * read on the first tool call and again after the client says its roots changed.
+ * The runs they start record the calling conversation on stdio alone
+ * (`ToolCallContext.parentSession`).
+ */
+function createServer(runtime: McpRuntime, directory: "process" | "roots"): Server {
+  // Create server with channel capability
+  const server = new Server(
+    { name: "claudish", version: "9.0.0" },
+    {
+      capabilities: {
+        ...(runtime.channelFrames ? { experimental: { "claude/channel": {} } } : {}),
+        tools: {},
+      },
+      instructions: INSTRUCTIONS,
+    }
+  );
+
+  let rootsDirectory: Promise<string> | undefined;
+  if (directory === "roots") {
+    server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
+      rootsDirectory = undefined;
+    });
+  }
+  const workingDirectoryFor = (extra: ToolRequestExtra): Promise<string> => {
+    if (directory === "process") return Promise.resolve(process.cwd());
+    rootsDirectory ??= readRootsDirectory(server, extra).catch((error: unknown) => {
+      rootsDirectory = undefined;
+      throw error;
+    });
+    return rootsDirectory;
+  };
+  const parentSession = (): Promise<string | undefined> =>
+    directory === "process"
+      ? parentSessionForCall({ hostPid: runtime.sessionManager.hostPid })
+      : Promise.resolve(undefined);
 
   // Register ListTools handler
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: enabledTools.map((t) => ({
+    tools: runtime.enabledTools.map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
@@ -2560,10 +2652,27 @@ async function main() {
   // never started.
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
-    const tool = toolMap.get(name);
+    const tool = runtime.toolMap.get(name);
     if (!tool) {
       return {
         content: [{ type: "text" as const, text: `Error: Unknown tool "${name}"` }],
+        isError: true,
+      };
+    }
+
+    // A tool never runs in a directory it was not given: one the client should
+    // name and could not is an error, and the next call asks again.
+    let workingDirectory: string;
+    try {
+      workingDirectory = await workingDirectoryFor(extra);
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: could not read the calling session's working directory (roots/list): ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
         isError: true,
       };
     }
@@ -2572,14 +2681,15 @@ async function main() {
       ? startHeartbeat({
           token: extra._meta?.progressToken,
           label: name,
-          intervalMs: progressIntervalMs,
+          intervalMs: runtime.progressIntervalMs,
           send: (frame) =>
             extra.sendNotification({ method: "notifications/progress", params: frame }),
         })
       : NOOP_HEARTBEAT;
     const ctx: ToolCallContext = {
       reportProgress: (message) => heartbeat.tick(message),
-      workingDirectory: process.cwd(),
+      workingDirectory,
+      parentSession,
     };
 
     try {
@@ -2599,13 +2709,39 @@ async function main() {
     }
   });
 
+  return server;
+}
+
+/**
+ * Settle every team run and channel session the runtime's tools started CANCELLED, so
+ * their records end (`meta.json`, the closing wait line). Both outlive the call that
+ * started them: a channel session runs until it ends, and a team `run` returns before
+ * its models finish. The panes behind them are reaped after this.
+ */
+async function shutdownRuntime(runtime: McpRuntime): Promise<void> {
+  await Promise.allSettled([shutdownAllTeamRuns(), runtime.sessionManager.shutdownAll()]);
+}
+
+async function main() {
+  let server: Server | null = null;
+  const runtime = createRuntime((frame) =>
+    server
+      ? server.notification({ method: "notifications/claude/channel", params: frame })
+      : Promise.resolve()
+  );
+  server = createServer(runtime, "process");
+
+  console.error(
+    `[claudish] MCP server started (tools: ${runtime.toolMode}, ${runtime.enabledTools.length} tools)`
+  );
+
   // Connect via stdio transport. installWireTap() is a no-op unless
   // CLAUDISH_CHANNEL_TRACE=1 is set; when active it mirrors outbound channel
   // notification frames to stderr so we can confirm wire-level delivery.
   const transport = new StdioServerTransport();
   installWireTap();
   await server.connect(transport);
-  installMcpShutdown(sessionManager);
+  installMcpShutdown(runtime);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
   // after an identity check. Asynchronous, and once per root per process — the first
   // pane's own sweep (ensureSwept in startPaneSession) is this one, not a second `ps`.
@@ -2620,13 +2756,171 @@ async function main() {
  * replace these options. A SIGKILL of this process ends no record; the per-pane
  * watchers still remove the panes.
  */
-function installMcpShutdown(sessionManager: SessionManager): void {
-  const before = async (): Promise<void> => {
-    await Promise.allSettled([shutdownAllTeamRuns(), sessionManager.shutdownAll()]);
-  };
+function installMcpShutdown(runtime: McpRuntime): void {
   // The stdio transport closes when stdin does, so stdin's `end`/`close` is the
   // transport-close hook too.
-  installPaneShutdownHooks({ stdin: true, before });
+  installPaneShutdownHooks({ stdin: true, before: () => shutdownRuntime(runtime) });
+}
+
+// ─── Streamable HTTP ─────────────────────────────────────────────────────────
+
+/** The MCP endpoint's path on the HTTP listener, the one the specification's examples use. */
+export const MCP_HTTP_PATH = "/mcp";
+
+/**
+ * How long a client's MCP session outlives the end of its standalone stream, the
+ * GET it holds open for messages from the server.
+ *
+ * Claude Code never ends a session itself: 2.1.286 carries the SDK's DELETE
+ * (`terminateSession`) and never calls it, and a session that exits drops its
+ * streams and nothing else (measured with a probe server), so that end is the one
+ * sign a client has gone. A live client whose stream dropped reopens it within the
+ * SDK client's reconnection delay, at most `maxReconnectionDelay` (30 s) of
+ * `DEFAULT_STREAMABLE_HTTP_RECONNECTION_OPTIONS` in
+ * `@modelcontextprotocol/sdk/client/streamableHttp.js`, which does not export it.
+ * A client whose session ended is answered 404 and starts another, as the
+ * specification's session management has it; Claude Code does ("MCP session
+ * expired ... triggering reconnection").
+ * https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#session-management
+ */
+export const SESSION_STREAM_GRACE_MS = 30_000;
+
+export interface McpHttpServer {
+  /** The MCP endpoint, for a client's `"type": "http"` server entry. */
+  url: string;
+  port: number;
+  /** End every session, stop listening, and stop what the tools started. */
+  close(): Promise<void>;
+}
+
+interface HttpSession {
+  transport: WebStandardStreamableHTTPServerTransport;
+  openStreams: number;
+  reap: ReturnType<typeof setTimeout> | null;
+}
+
+/**
+ * Serve the MCP tools over Streamable HTTP on 127.0.0.1:`port` (0 picks one) to
+ * every client at once, from one runtime: a session and a server for each client,
+ * as the SDK's stateful example has them, each tool call run in the directory its
+ * client lists as a root, and what the tools start (channel sessions, team runs)
+ * shared by every client. Channel frames are not sent: Claude Code takes them from
+ * a channel server it starts itself over stdio. Host and Origin are checked as the
+ * specification asks of a local server, against this listener's own addresses.
+ * https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http
+ * https://github.com/modelcontextprotocol/typescript-sdk#with-session-management
+ *
+ * The process that starts it decides when to exit, so its pane shutdown hooks settle
+ * the records and reap the panes on a signal without exiting, and `close` runs the
+ * same two steps and waits for them. They are installed before any pane exists, as
+ * the stdio server's are, so `startPaneSession`'s own hooks, which exit at once, never
+ * apply.
+ */
+export async function startMcpHttpServer(
+  port: number,
+  options: { streamGraceMs?: number } = {}
+): Promise<McpHttpServer> {
+  const runtime = createRuntime(null);
+  installPaneShutdownHooks({ exitAfter: false, before: () => shutdownRuntime(runtime) });
+  void ensureSwept(sockRootFor()).catch(() => undefined);
+  const graceMs = options.streamGraceMs ?? SESSION_STREAM_GRACE_MS;
+  const sessions = new Map<string, HttpSession>();
+
+  const forget = (id: string): HttpSession | undefined => {
+    const session = sessions.get(id);
+    if (!session) return undefined;
+    sessions.delete(id);
+    if (session.reap) clearTimeout(session.reap);
+    return session;
+  };
+
+  // Counted from the moment the transport answers a GET with an event stream, and
+  // given back when the client ends that request.
+  const holdStream = (id: string, session: HttpSession, signal: AbortSignal) => {
+    session.openStreams++;
+    if (session.reap) {
+      clearTimeout(session.reap);
+      session.reap = null;
+    }
+    signal.addEventListener(
+      "abort",
+      () => {
+        session.openStreams--;
+        if (session.openStreams > 0 || sessions.get(id) !== session) return;
+        session.reap = setTimeout(() => {
+          if (forget(id)) void session.transport.close();
+        }, graceMs);
+      },
+      { once: true }
+    );
+  };
+
+  const startSession = async (req: Request, boundPort: number): Promise<Response> => {
+    const transport: WebStandardStreamableHTTPServerTransport =
+      new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        enableDnsRebindingProtection: true,
+        allowedHosts: [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`],
+        allowedOrigins: [`http://127.0.0.1:${boundPort}`, `http://localhost:${boundPort}`],
+        onsessioninitialized: (id) => {
+          sessions.set(id, { transport, openStreams: 0, reap: null });
+        },
+        // A DELETE: the transport closes itself after this.
+        onsessionclosed: (id) => {
+          forget(id);
+        },
+      });
+    await createServer(runtime, "roots").connect(transport);
+    // A request that is not an initialization is refused by the transport, and the
+    // pair is never registered.
+    return transport.handleRequest(req);
+  };
+
+  const listener = Bun.serve({
+    port,
+    hostname: "127.0.0.1",
+    async fetch(req, bun) {
+      if (new URL(req.url).pathname !== MCP_HTTP_PATH) {
+        return new Response("Not Found", { status: 404 });
+      }
+      // A tool call streams progress for as long as it runs, and a standalone
+      // stream carries nothing for most of its life; neither one is idle.
+      bun.timeout(req, 0);
+      const id = req.headers.get("mcp-session-id");
+      if (id === null) return startSession(req, bun.port ?? port);
+      const session = sessions.get(id);
+      if (!session) {
+        // The transport's own answer for a session it does not know.
+        return Response.json(
+          { jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null },
+          { status: 404 }
+        );
+      }
+      const response = await session.transport.handleRequest(req);
+      if (
+        req.method === "GET" &&
+        response.headers.get("content-type")?.startsWith("text/event-stream")
+      ) {
+        holdStream(id, session, req.signal);
+      }
+      return response;
+    },
+  });
+  const boundPort = listener.port ?? port;
+
+  return {
+    url: `http://127.0.0.1:${boundPort}${MCP_HTTP_PATH}`,
+    port: boundPort,
+    async close() {
+      listener.stop(true);
+      for (const id of [...sessions.keys()]) {
+        const session = forget(id);
+        await session?.transport.close().catch(() => {});
+      }
+      await shutdownRuntime(runtime);
+      await reapAllPanes("shutdown");
+    },
+  };
 }
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────

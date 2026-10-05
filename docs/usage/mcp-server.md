@@ -51,6 +51,8 @@ Ask Grok to review this function
 
 Claude will use the `run_prompt` tool to call Grok.
 
+**One server for every session:** `claudish daemon --mcp-port <n>` serves the same tools over HTTP to all of a machine's sessions at once, declared as `{ "type": "http", "url": "http://127.0.0.1:<n>/mcp" }`. See [Daemon Mode](daemon-mode.md#serve-the-mcp-tools-to-every-session).
+
 ---
 
 ## Available Tools

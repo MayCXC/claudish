@@ -26,7 +26,7 @@ lives in `ROADMAP.md`.
   watcher and identity-checked reap, socket traps, the frozen mod contract v1. Read before editing
   `pane/`, team spawn or channel spawn
 - `first-party.md` — what Claude Code gates on trusting its base URL, why a `--monitor` session can be given that trust, and what the proxy then owes each request; read before editing native forwarding
-- `daemon-mode.md` — `claudish daemon` as the service manager of Claude Code's supervisor: what `claude daemon run` does per origin, the restart policy of Claude Code's own unit for the supervisor and the reinstall wait after the exit-70 upgrade, one signal through a separate process group, and why sessions reach the proxy only through a settings `env` block; read before editing `daemon-command.ts`
+- `daemon-mode.md` — `claudish daemon` as the service manager of Claude Code's supervisor: what `claude daemon run` does per origin, the restart policy of Claude Code's own unit for the supervisor and the reinstall wait after the exit-70 upgrade, one signal through a separate process group, why sessions reach the proxy only through a settings `env` block, and the MCP server it serves over HTTP (`--mcp-port`): roots as the caller's directory, sessions ended with their client's stream, tool-started work shared by every client; read before editing `daemon-command.ts` or `startMcpHttpServer`
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
