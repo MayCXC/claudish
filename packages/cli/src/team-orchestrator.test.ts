@@ -431,6 +431,20 @@ describe("team-orchestrator", () => {
       expect(typeof result).toBe("string");
       expect(result.startsWith(process.cwd())).toBe(true);
     });
+
+    it("resolves a relative path inside the caller's directory and contains it there", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+      // A session's working directory exists, as the realpath comparison needs.
+      const callerDir = mkdtempSync(join(tmpdir(), "claudish-caller-dir-"));
+      try {
+        expect(validateSessionPath("runs/review", callerDir)).toBe(join(callerDir, "runs/review"));
+        expect(() => validateSessionPath("../elsewhere", callerDir)).toThrow(
+          "Session path must be within current directory: ../elsewhere"
+        );
+      } finally {
+        rmSync(callerDir, { recursive: true, force: true });
+      }
+    });
   });
 
   // ── FR6: getStatus ────────────────────────────────────────────────────────

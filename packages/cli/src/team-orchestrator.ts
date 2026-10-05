@@ -255,6 +255,12 @@ export interface TeamRunOptions {
     inboxPath: string | null;
     engine: HookEngine | null;
   }) => SessionHookBinding | null;
+  /**
+   * The directory the panes run in, whose project rules also decide the routes
+   * pinned for them: the calling session's working directory for an MCP call. This
+   * process's working directory when absent.
+   */
+  cwd?: string;
 }
 
 /**
@@ -302,6 +308,8 @@ export interface TeamJudgeOptions {
   parentEnv?: Record<string, string | undefined>;
   /** @internal test-only pane timing seams */
   paneTimings?: PaneSessionOptions["timings"];
+  /** The directory the judge panes run in, as `TeamRunOptions.cwd`. */
+  cwd?: string;
 }
 
 export interface VoteResult {
@@ -1028,7 +1036,8 @@ function persistErrorLog(
 // ─── Path Validation ──────────────────────────────────────────────────────────
 
 /**
- * Validate that sessionPath is within cwd (prevents path traversal in MCP tools).
+ * Validate that sessionPath is within cwd (prevents path traversal in MCP tools),
+ * the calling session's working directory for an MCP call.
  *
  * Both sides are compared as realpaths, so symlinks are resolved: another
  * spelling of cwd (macOS `/var` vs `/private/var`) is accepted, and a symlink
@@ -1036,8 +1045,8 @@ function persistErrorLog(
  * exist yet; its nearest existing ancestor is resolved and the rest re-appended.
  * Returns the resolved absolute path in the caller's spelling.
  */
-export function validateSessionPath(sessionPath: string): string {
-  const resolved = resolve(sessionPath);
+export function validateSessionPath(sessionPath: string, cwd: string = process.cwd()): string {
+  const resolved = resolve(cwd, sessionPath);
   const outside = () => new Error(`Session path must be within current directory: ${sessionPath}`);
 
   // Walk up to the nearest ancestor that exists (lstat: a dangling link counts as existing).
@@ -1062,8 +1071,8 @@ export function validateSessionPath(sessionPath: string): string {
     throw outside(); // a dangling symlink leads nowhere we can vouch for
   }
 
-  const cwd = realpathSync(process.cwd());
-  if (real !== cwd && !real.startsWith(cwd + sep)) {
+  const root = realpathSync(cwd);
+  if (real !== root && !real.startsWith(root + sep)) {
     throw outside();
   }
   return resolved;
@@ -1082,9 +1091,8 @@ export function validateSessionPath(sessionPath: string): string {
  * `team` is reachable over MCP, so an unbounded path here would turn "run a
  * team" into "read any file on this machine and put it in a prompt".
  */
-export function readTeamInputFile(inputPath: string): string {
-  const resolved = resolve(inputPath);
-  const cwd = process.cwd();
+export function readTeamInputFile(inputPath: string, cwd: string = process.cwd()): string {
+  const resolved = resolve(cwd, inputPath);
   if (!resolved.startsWith(`${cwd}/`) && resolved !== cwd) {
     throw new Error(`Input file must be within current directory: ${inputPath}`);
   }
@@ -1329,9 +1337,10 @@ async function startModelsIn(
   // children, and the returned plan pins each bare name to an explicit
   // "provider@model" spec so the child never re-walks the chain. See
   // auth/credentials/prehydrate.ts for the measured repro.
-  const spawnPlan = await (opts.spawnPlanner ?? prehydrateCredentialsForSpawn)(
-    Object.values(manifest.models).map((m) => m.model)
-  );
+  const spawnPlan = await (
+    opts.spawnPlanner ??
+    ((models) => prehydrateCredentialsForSpawn(models, { projectDirectory: opts.cwd }))
+  )(Object.values(manifest.models).map((m) => m.model));
   await assertMagmuxAvailable();
 
   // In-memory status cache to eliminate read-modify-write races
@@ -1562,7 +1571,7 @@ async function startModelsIn(
     notifyStatus(e.id);
   }
 
-  const cwd = process.cwd();
+  const cwd = opts.cwd ?? process.cwd();
   const projects = projectsDir(parentEnv);
 
   /** The slot's hook binding: a test's, or the real one when the engine has session hooks. */
@@ -1946,6 +1955,7 @@ export async function judgeResponses(
   await runModels(judgePath, {
     claudeFlags: opts.claudeFlags,
     kind: "judge",
+    cwd: opts.cwd,
     ...(opts.parentEnv ? { parentEnv: opts.parentEnv } : {}),
     ...(opts.paneTimings ? { paneTimings: opts.paneTimings } : {}),
   });
