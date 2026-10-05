@@ -2028,16 +2028,13 @@ function defineTools(
         // which the child inherits; the returned plan pins the bare name to an
         // explicit "provider@model" spec so the child never re-walks the chain
         // and asks 1Password about candidates the parent short-circuited past.
-        //
-        // Pinning is SKIPPED for a work_dir outside this process's cwd: route()
-        // reads project-local config relative to process.cwd(), so the parent
-        // would decide with the wrong project's rules. process.chdir() is not
-        // an option — it is process-global and races concurrent calls.
+        // The route is decided with the project rules of the directory the
+        // child runs in, the ones the child would read itself.
         const requestedModel = args.model as string;
         const workDir = args.work_dir as string | undefined;
 
         const plan = await prehydrateCredentialsForSpawn([requestedModel], {
-          pin: workDir === undefined || resolve(workDir) === process.cwd(),
+          projectDirectory: workDir === undefined ? undefined : resolve(workDir),
         });
 
         // The conversation live in the calling window, from the host's session

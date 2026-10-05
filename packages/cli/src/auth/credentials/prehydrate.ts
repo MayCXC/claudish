@@ -105,7 +105,7 @@ import { proxyRouteDecision } from "../../providers/native-route.js";
 import { getOpFailures } from "../../providers/onepassword.js";
 import { validateApiKeysForModels } from "../../providers/provider-resolver.js";
 import type { Route, RoutePlan } from "../../providers/routing-rules.js";
-import { route } from "../../providers/routing-rules.js";
+import { route, routeIn } from "../../providers/routing-rules.js";
 import { OP_UNAVAILABLE_ENV, getOpUnavailableVars } from "./op-source.js";
 
 /** The routing oracle {@link prehydrateCredentialsForSpawn} consults (test seam). */
@@ -137,14 +137,17 @@ export interface PrehydrateOptions {
   /**
    * Resolve routes and populate `plan.pinned` (default `true`).
    *
-   * Pass `false` when the parent's routing view is not the child's — the only
-   * current case is `create_session` with a `work_dir` outside the parent's
-   * cwd, because `route()` reads project-local config relative to
-   * `process.cwd()` and would decide with the wrong project's rules.
-   * (`process.chdir()` is not an option: it is process-global and races
-   * concurrent calls.) Phase A still runs.
+   * Pass `false` when the parent's routing view is not the child's, which a
+   * directory alone cannot make so: `projectDirectory` covers that one. Phase A
+   * still runs.
    */
   pin?: boolean;
+  /**
+   * The directory the children will run in. Its project `.claudish.json`
+   * decides the pinned routes, as it decides each child's own (`routeIn`);
+   * this process's working directory when absent.
+   */
+  projectDirectory?: string;
   /** Test seam — injectable router, mirroring `RouteOracle` in provider-resolver. */
   router?: RouteOracle;
   /** Test seam — proves phase A runs without replacing a shared Bun module. */
@@ -181,7 +184,10 @@ export async function prehydrateCredentialsForSpawn(
 
     // Phase B — route. Never throws; every failure omits an entry.
     if (opts?.pin !== false) {
-      await pinRoutes(wanted, plan.pinned, opts?.router ?? route);
+      const router =
+        opts?.router ??
+        (opts?.projectDirectory === undefined ? route : routeIn(opts.projectDirectory));
+      await pinRoutes(wanted, plan.pinned, router);
     }
 
     // Phase C — unchanged, and still LAST so it sees the fuller record that

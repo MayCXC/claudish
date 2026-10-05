@@ -66,11 +66,13 @@ export function loadRoutingRules(sources?: RoutingRuleSources): RoutingRules {
 /**
  * The two rule tables `loadRoutingRules` merges, read from this machine's config
  * and kept apart: global (`~/.claudish/config.json`, or the `--config` file) and
- * project (`./.claudish.json`). A caller that must say WHICH file a matched rule
- * came from (`explainRoute`) reads them here and merges them itself.
+ * project (the `.claudish.json` found from `cwd` upward, this process's working
+ * directory unless a caller names the directory it routes for). A caller that
+ * must say WHICH file a matched rule came from (`explainRoute`) reads them here
+ * and merges them itself.
  */
-export function loadRoutingRuleSources(): RoutingRuleSources {
-  const localRules = loadLocalConfig()?.routing ?? {};
+export function loadRoutingRuleSources(cwd: string = process.cwd()): RoutingRuleSources {
+  const localRules = loadLocalConfig(cwd)?.routing ?? {};
   const globalRules = loadConfig().routing ?? {};
   return { globalRules, localRules };
 }
@@ -1291,6 +1293,18 @@ export async function route(
   );
   emitRouteNotices(explanation);
   return toRoutePlan(explanation);
+}
+
+/**
+ * `route()` as it decides for a caller working in `cwd`: the project rules found
+ * from that directory over the global ones, and the configured default provider,
+ * which is the same in every directory. A claudish started in `cwd` reads the
+ * same two, so a route decided here for a child that runs there is the route the
+ * child would decide itself.
+ */
+export function routeIn(cwd: string): (modelSpec: string) => Promise<RoutePlan> {
+  return (modelSpec) =>
+    route(modelSpec, loadRoutingRules(loadRoutingRuleSources(cwd)), effectiveDefaultProvider());
 }
 
 /**

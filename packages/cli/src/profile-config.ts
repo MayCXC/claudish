@@ -463,8 +463,9 @@ export function getConfigPath(): string {
 /**
  * Get path to local config file (.claudish.json).
  *
- * Walks up from cwd to find an existing .claudish.json so users can run
- * `claudish` from any subdirectory of their project. Walk-up stops at:
+ * Walks up from `cwd`, this process's working directory unless a caller names
+ * the directory it works for, to find an existing .claudish.json so users can
+ * run `claudish` from any subdirectory of their project. Walk-up stops at:
  *   - $HOME (don't escape into the user's home dir)
  *   - The git repo root (presence of `.git`) — bounds project scope
  *   - The filesystem root
@@ -477,9 +478,9 @@ export function getConfigPath(): string {
  * local-config consumer (Profiles, Routing, custom endpoints) discovers
  * the project file. Documented in app-tsx-split PR.
  */
-export function getLocalConfigPath(): string {
+export function getLocalConfigPath(cwd: string = process.cwd()): string {
   const home = homedir();
-  let dir = process.cwd();
+  let dir = cwd;
   const root = parse(dir).root;
 
   while (dir !== root && dir !== home) {
@@ -494,7 +495,7 @@ export function getLocalConfigPath(): string {
     dir = dirname(dir);
   }
   // No project boundary found — fall back to cwd.
-  return join(process.cwd(), LOCAL_CONFIG_FILENAME);
+  return join(cwd, LOCAL_CONFIG_FILENAME);
 }
 
 /**
@@ -612,15 +613,15 @@ export function isProjectDirectory(): boolean {
 }
 
 /**
- * Load local configuration from .claudish.json in CWD
+ * Load local configuration from the .claudish.json `getLocalConfigPath(cwd)` finds.
  * Returns null if file doesn't exist
  */
-export function loadLocalConfig(): ClaudishProfileConfig | null {
+export function loadLocalConfig(cwd: string = process.cwd()): ClaudishProfileConfig | null {
   // A --config override fully replaces machine settings, so the project
   // .claudish.json is ignored for this run (otherwise it would merge back in).
   if (getConfigFileOverride()) return null;
 
-  const localPath = getLocalConfigPath();
+  const localPath = getLocalConfigPath(cwd);
 
   if (!existsSync(localPath)) {
     return null;
