@@ -216,6 +216,12 @@ export interface TeamRunOptions {
   paneTimings?: PaneSessionOptions["timings"];
   /** @internal test-only boot bound; production uses the pane's 90 s */
   bootTimeoutMs?: number;
+  /**
+   * The directory the panes run in, whose project rules also decide the routes
+   * pinned for them: the calling session's working directory for an MCP call. This
+   * process's working directory when absent.
+   */
+  cwd?: string;
 }
 
 /**
@@ -263,6 +269,8 @@ export interface TeamJudgeOptions {
   parentEnv?: Record<string, string | undefined>;
   /** @internal test-only pane timing seams */
   paneTimings?: PaneSessionOptions["timings"];
+  /** The directory the judge panes run in, as `TeamRunOptions.cwd`. */
+  cwd?: string;
 }
 
 export interface VoteResult {
@@ -925,12 +933,12 @@ function persistErrorLog(
 // ─── Path Validation ──────────────────────────────────────────────────────────
 
 /**
- * Validate that sessionPath is within cwd (prevents path traversal in MCP tools).
- * Returns the resolved absolute path.
+ * Validate that sessionPath is within cwd (prevents path traversal in MCP tools),
+ * the calling session's working directory for an MCP call. Returns the resolved
+ * absolute path.
  */
-export function validateSessionPath(sessionPath: string): string {
-  const resolved = resolve(sessionPath);
-  const cwd = process.cwd();
+export function validateSessionPath(sessionPath: string, cwd: string = process.cwd()): string {
+  const resolved = resolve(cwd, sessionPath);
   if (!resolved.startsWith(`${cwd}/`) && resolved !== cwd) {
     throw new Error(`Session path must be within current directory: ${sessionPath}`);
   }
@@ -950,9 +958,8 @@ export function validateSessionPath(sessionPath: string): string {
  * `team` is reachable over MCP, so an unbounded path here would turn "run a
  * team" into "read any file on this machine and put it in a prompt".
  */
-export function readTeamInputFile(inputPath: string): string {
-  const resolved = resolve(inputPath);
-  const cwd = process.cwd();
+export function readTeamInputFile(inputPath: string, cwd: string = process.cwd()): string {
+  const resolved = resolve(cwd, inputPath);
   if (!resolved.startsWith(`${cwd}/`) && resolved !== cwd) {
     throw new Error(`Input file must be within current directory: ${inputPath}`);
   }
@@ -1195,9 +1202,10 @@ async function startModelsIn(
   // children, and the returned plan pins each bare name to an explicit
   // "provider@model" spec so the child never re-walks the chain. See
   // auth/credentials/prehydrate.ts for the measured repro.
-  const spawnPlan = await (opts.spawnPlanner ?? prehydrateCredentialsForSpawn)(
-    Object.values(manifest.models).map((m) => m.model)
-  );
+  const spawnPlan = await (
+    opts.spawnPlanner ??
+    ((models) => prehydrateCredentialsForSpawn(models, { projectDirectory: opts.cwd }))
+  )(Object.values(manifest.models).map((m) => m.model));
   await assertMagmuxAvailable();
 
   // In-memory status cache to eliminate read-modify-write races
@@ -1405,7 +1413,7 @@ async function startModelsIn(
     notifyStatus(e.id);
   }
 
-  const cwd = process.cwd();
+  const cwd = opts.cwd ?? process.cwd();
   const projects = projectsDir(parentEnv);
 
   async function startSlot(e: SlotEntry, uuid: string, transcriptPath: string): Promise<void> {
@@ -1742,6 +1750,7 @@ export async function judgeResponses(
   await runModels(judgePath, {
     claudeFlags: opts.claudeFlags,
     kind: "judge",
+    cwd: opts.cwd,
     ...(opts.parentEnv ? { parentEnv: opts.parentEnv } : {}),
     ...(opts.paneTimings ? { paneTimings: opts.paneTimings } : {}),
   });

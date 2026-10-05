@@ -150,7 +150,7 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 
 **Parameters:**
 - `mode` (required) - One of: `run`, `status`, `list`, `capture`, `cancel`, `judge`, `run-and-judge`
-- `path` - Session directory path (must be within current working directory). Required by every mode except `list`
+- `path` - Session directory path, relative to the calling session's working directory and within it. Required by every mode except `list`
 - `models` - Model IDs to run (required for `run` and `run-and-judge`). Native Claude names (`opus`, `sonnet`, `haiku`, `internal`) are runnable slots too
 - `judges` - Model IDs to use as judges (default: same as runners)
 - `input_file` - Path to a file holding the task prompt (preferred for anything longer than a sentence)
@@ -294,7 +294,7 @@ is interactive and waits for `send_input`.
 - `timeout_seconds` (optional) - Session timeout in whole seconds, 1-3600 (default: 600). A fractional value is rounded and an out-of-range one clamped, so `spawn.json` always carries an integer in that range
 - `agent` (optional) - Claude Code subagent the session runs as, e.g. `dev:reviewer`
 - `claude_flags` (optional) - Other Claude Code / claudish flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`; a value after a Claude Code switch, as in `--brief now`, would be the session's first prompt and is refused). Flags the pane owns (`-p`, `--resume`, `--model`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
-- `work_dir` (optional) - Working directory for the session (default: current directory)
+- `work_dir` (optional) - Working directory for the session, relative to the calling session's (default: the calling session's working directory)
 
 **Returns:** `{ session_id: "...", state: "STARTING" }` as soon as the pane exists; Claude Code then boots in it.
 

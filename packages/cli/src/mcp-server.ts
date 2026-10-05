@@ -65,7 +65,7 @@ import { renderOpFailureBlock } from "./providers/onepassword.js";
 import { isReadyState, probeLink } from "./providers/probe-live.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
 import { nativeProviderForVendor } from "./providers/route-candidates.js";
-import { route } from "./providers/routing-rules.js";
+import { type route, routeIn } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
 import { sanitizeForReport } from "./redact.js";
 import {
@@ -171,6 +171,13 @@ interface ToolCallContext {
    * heartbeat has been stopped. Never throws.
    */
   reportProgress: (message?: string) => void;
+  /**
+   * The directory the calling session works in. Paths a tool is given resolve
+   * against it, the children it starts run in it, and the routes it decides come
+   * from that directory's project rules. On stdio it is this process's working
+   * directory, the session's own, since the harness starts the server there.
+   */
+  workingDirectory: string;
 }
 
 interface ToolDefinition {
@@ -245,34 +252,33 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
   }
 }
 
-// ─── Lazy Proxy Singleton ────────────────────────────────────────────────────
-// The proxy runs the same routing engine as the CLI: auto-route, fallback chains,
+// ─── Lazy Proxies ────────────────────────────────────────────────────────────
+// A proxy runs the same routing engine as the CLI: auto-route, fallback chains,
 // custom routing rules, catalog resolution, and all direct provider transports.
-// It's started once on first use and reused for all subsequent MCP tool calls.
+// It reads its project's routing rules once, when it starts, so there is one per
+// working directory that calls a routing tool, started on that directory's first
+// call and reused for every later one from it.
 
-let proxyInstance: ProxyServer | null = null;
-let proxyStarting: Promise<ProxyServer> | null = null;
+const proxies = new Map<string, Promise<ProxyServer>>();
 
-async function getProxy(): Promise<ProxyServer> {
-  if (proxyInstance) return proxyInstance;
-  if (proxyStarting) return proxyStarting;
-
-  proxyStarting = (async () => {
-    const port = await findAvailablePort(10000, 19999);
-    const proxy = await createProxyServer(
-      port,
-      process.env.OPENROUTER_API_KEY,
-      undefined, // no default model — each call specifies its own
-      false, // not monitor mode
-      process.env.ANTHROPIC_API_KEY,
-      undefined, // no model map
-      { quiet: true }
-    );
-    proxyInstance = proxy;
-    return proxy;
-  })();
-
-  return proxyStarting;
+function getProxy(workingDirectory: string): Promise<ProxyServer> {
+  let proxy = proxies.get(workingDirectory);
+  if (!proxy) {
+    proxy = (async () => {
+      const port = await findAvailablePort(10000, 19999);
+      return createProxyServer(
+        port,
+        process.env.OPENROUTER_API_KEY,
+        undefined, // no default model — each call specifies its own
+        false, // not monitor mode
+        process.env.ANTHROPIC_API_KEY,
+        undefined, // no model map
+        { quiet: true, projectDirectory: workingDirectory }
+      );
+    })();
+    proxies.set(workingDirectory, proxy);
+  }
+  return proxy;
 }
 
 /** Parse Anthropic SSE stream and extract text content + usage */
@@ -316,16 +322,21 @@ export function parseAnthropicSse(raw: string): {
 /**
  * Append the contents of local files to a prompt as labeled fenced blocks.
  *
- * Paths resolve against the process working directory. An unreadable or missing
- * file does not fail the call: it is reported inline as a short warning line so
- * the model still sees which file was requested, and the readable files are
- * appended regardless. Returns the prompt unchanged when no files are given.
+ * Paths resolve against `cwd`, the calling session's working directory. An
+ * unreadable or missing file does not fail the call: it is reported inline as a
+ * short warning line so the model still sees which file was requested, and the
+ * readable files are appended regardless. Returns the prompt unchanged when no
+ * files are given.
  */
-export function appendFilesToPrompt(prompt: string, files: string[] | undefined): string {
+export function appendFilesToPrompt(
+  prompt: string,
+  files: string[] | undefined,
+  cwd: string = process.cwd()
+): string {
   if (!Array.isArray(files) || files.length === 0) return prompt;
   const blocks = files.map((file) => {
     try {
-      const contents = readFileSync(file, "utf-8");
+      const contents = readFileSync(resolve(cwd, file), "utf-8");
       return `--- ${file} ---\n\`\`\`\n${contents}\n\`\`\``;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -339,9 +350,10 @@ export async function runPromptViaProxy(
   model: string,
   prompt: string,
   systemPrompt?: string,
-  maxTokens?: number
+  maxTokens?: number,
+  workingDirectory: string = process.cwd()
 ): Promise<{ content: string; usage?: { input: number; output: number } }> {
-  const proxy = await getProxy();
+  const proxy = await getProxy(workingDirectory);
 
   // Build Anthropic Messages API request
   const body: Record<string, unknown> = {
@@ -704,11 +716,11 @@ function contractErrorAnswer(e: unknown): ToolAnswer {
   };
 }
 
-function contractPath(raw: unknown, mode: string): string {
+function contractPath(raw: unknown, mode: string, cwd: string): string {
   if (typeof raw !== "string" || !raw)
     throw new ContractErrorException("invalid_args", `'path' is required for mode '${mode}'`);
   try {
-    return validateSessionPath(raw);
+    return validateSessionPath(raw, cwd);
   } catch (e) {
     throw new ContractErrorException("invalid_args", e instanceof Error ? e.message : String(e));
   }
@@ -778,16 +790,20 @@ export function teamStatusAnswer(path: string, runId?: string): Record<string, u
   });
 }
 
-/** `list` / `status` / `cancel` / `capture`: memory reads, JSON answers, ContractError errors. */
+/**
+ * `list` / `status` / `cancel` / `capture`: memory reads, JSON answers, ContractError errors.
+ * `path` resolves against `workingDirectory`, the calling session's, and stays within it.
+ */
 export async function teamContractVerb(
   mode: "list" | "status" | "cancel" | "capture",
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  workingDirectory: string = process.cwd()
 ): Promise<ToolAnswer> {
   try {
     if (mode === "list") return contractAnswer(listTeamRuns());
     // Every argument's TYPE is checked before the run is looked up: a wrongly typed argument
     // is the caller's error whether or not the run exists (§8 E).
-    const path = contractPath(args.path, mode);
+    const path = contractPath(args.path, mode, workingDirectory);
     const runId = optionalString(args.run_id, "run_id");
     const slot = optionalString(args.slot, "slot");
     const since = optionalInteger(args.since_seq, "since_seq");
@@ -901,13 +917,18 @@ function defineTools(
     // A single reasoning model can block for many minutes with nothing on the
     // wire. Handler body unchanged — the dispatch owns the keepalive.
     heartbeat: true,
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       try {
         const result = await runPromptViaProxy(
           args.model as string,
-          appendFilesToPrompt(args.prompt as string, args.files as string[] | undefined),
+          appendFilesToPrompt(
+            args.prompt as string,
+            args.files as string[] | undefined,
+            ctx.workingDirectory
+          ),
           args.system_prompt as string | undefined,
-          args.max_tokens as number | undefined
+          args.max_tokens as number | undefined,
+          ctx.workingDirectory
         );
         let response = result.content;
         if (result.usage) {
@@ -1185,7 +1206,11 @@ function defineTools(
       // `prompt` stays the user's text for the comparison header and progress
       // notes; the file-augmented form is what each model actually receives.
       const prompt = args.prompt as string;
-      const promptWithFiles = appendFilesToPrompt(prompt, args.files as string[] | undefined);
+      const promptWithFiles = appendFilesToPrompt(
+        prompt,
+        args.files as string[] | undefined,
+        ctx.workingDirectory
+      );
       const systemPrompt = args.system_prompt as string | undefined;
       const maxTokens = args.max_tokens as number | undefined;
 
@@ -1200,7 +1225,13 @@ function defineTools(
       }> = [];
       for (const model of modelIds) {
         try {
-          const result = await runPromptViaProxy(model, promptWithFiles, systemPrompt, maxTokens);
+          const result = await runPromptViaProxy(
+            model,
+            promptWithFiles,
+            systemPrompt,
+            maxTokens,
+            ctx.workingDirectory
+          );
           results.push({ model, response: result.content, tokens: result.usage });
         } catch (error) {
           results.push({
@@ -1293,7 +1324,9 @@ function defineTools(
       // never are (see the loop), so an all-native model list must neither wait on
       // proxy startup nor throw from it.
       const needsProxy = doProbe && models.some((m) => nativeRouteFor(m) === null);
-      const proxy = needsProxy ? await getProxy() : null;
+      const proxy = needsProxy ? await getProxy(ctx.workingDirectory) : null;
+      // The rules a real run from the caller's directory would route with.
+      const routeFromCaller = routeIn(ctx.workingDirectory);
 
       // Register runtime providers before ANY `route()` call below.
       //
@@ -1343,7 +1376,7 @@ function defineTools(
 
         let plan: Awaited<ReturnType<typeof route>>;
         try {
-          plan = await route(model);
+          plan = await routeFromCaller(model);
         } catch (err) {
           failedModels.push(model);
           rows.push(
@@ -1602,7 +1635,7 @@ function defineTools(
     handler: async (args, ctx) => {
       const mode = args.mode as string;
       if (mode === "list" || mode === "status" || mode === "cancel" || mode === "capture") {
-        return teamContractVerb(mode, args);
+        return teamContractVerb(mode, args, ctx.workingDirectory);
       }
       try {
         if (mode !== "run" && mode !== "judge" && mode !== "run-and-judge")
@@ -1623,14 +1656,17 @@ function defineTools(
               "rendered verbatim in the caller's terminal."
           );
         }
-        const input = inputFile !== undefined ? readTeamInputFile(inputFile) : inlineInput;
+        const input =
+          inputFile !== undefined
+            ? readTeamInputFile(inputFile, ctx.workingDirectory)
+            : inlineInput;
         const requirePattern = args.require_pattern as string | undefined;
         const minOutputBytes = args.min_output_bytes as number | undefined;
         const childFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
         // No agent probe here: the interactive child refuses an unknown --agent itself,
         // before any model request, and that slot is FAILED agent_rejected (D11).
 
-        const resolved = validateSessionPath(path);
+        const resolved = validateSessionPath(path, ctx.workingDirectory);
 
         // Live per-model token/cost progress for the run modes. The session
         // basename is a stable, human-recognisable id for the channel frames.
@@ -1640,6 +1676,7 @@ function defineTools(
           requirePattern,
           minOutputBytes,
           claudeFlags: childFlags,
+          cwd: ctx.workingDirectory,
           onProgress: (u: {
             rendered: string;
             phase: "running" | "settled";
@@ -1766,7 +1803,11 @@ function defineTools(
             };
           }
           case "judge": {
-            const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
+            const verdict = await judgeResponses(resolved, {
+              judges,
+              claudeFlags: childFlags,
+              cwd: ctx.workingDirectory,
+            });
             return { content: [{ type: "text" as const, text: JSON.stringify(verdict, null, 2) }] };
           }
           case "run-and-judge": {
@@ -1782,7 +1823,11 @@ function defineTools(
             const handle = await startModels(resolved, runOpts);
             await handle.done;
             const run = teamRunRow(resolved, handle.runId);
-            const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
+            const verdict = await judgeResponses(resolved, {
+              judges,
+              claudeFlags: childFlags,
+              cwd: ctx.workingDirectory,
+            });
             return {
               content: [
                 {
@@ -2004,13 +2049,14 @@ function defineTools(
         },
         work_dir: {
           type: "string",
-          description: "Working directory for the session (default: current directory)",
+          description:
+            "Working directory for the session, relative to the caller's (default: the caller's working directory)",
         },
       },
       required: ["model"],
     },
     group: "channel",
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       try {
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
         // Refusals first, before any credential work: reserved or positional flags, then
@@ -2031,10 +2077,13 @@ function defineTools(
         // The route is decided with the project rules of the directory the
         // child runs in, the ones the child would read itself.
         const requestedModel = args.model as string;
-        const workDir = args.work_dir as string | undefined;
+        const workDir =
+          args.work_dir === undefined
+            ? ctx.workingDirectory
+            : resolve(ctx.workingDirectory, args.work_dir as string);
 
         const plan = await prehydrateCredentialsForSpawn([requestedModel], {
-          projectDirectory: workDir === undefined ? undefined : resolve(workDir),
+          projectDirectory: workDir,
         });
 
         // The conversation live in the calling window, from the host's session
@@ -2530,6 +2579,7 @@ async function main() {
       : NOOP_HEARTBEAT;
     const ctx: ToolCallContext = {
       reportProgress: (message) => heartbeat.tick(message),
+      workingDirectory: process.cwd(),
     };
 
     try {

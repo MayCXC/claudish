@@ -165,6 +165,13 @@ export interface ProxyServerOptions {
    * any path it does not serve is forwarded there instead of answered with a 404.
    */
   passthrough?: boolean;
+  /**
+   * The directory whose project `.claudish.json` supplies this proxy's project
+   * routing rules: the directory a caller in another one routes for, such as an
+   * MCP tool call made from that directory. This process's working directory when
+   * absent.
+   */
+  projectDirectory?: string;
 }
 
 /**
@@ -597,7 +604,7 @@ export async function createProxyServer(
   // local config (local wins), and nothing else — there is no shipped table any
   // more. The routing engine consults these via route() for every bare-name
   // request, and falls through to the catalog-gathered chain when none matches.
-  const routingRuleSources = loadRoutingRuleSources();
+  const routingRuleSources = loadRoutingRuleSources(options.projectDirectory);
   const effectiveRoutingRules = loadRoutingRules(routingRuleSources);
   // Problems in those rules, reported ONCE, here: before Claude Code owns the
   // terminal, and through logStderr, which the quiet flag and a diagnostics pane
