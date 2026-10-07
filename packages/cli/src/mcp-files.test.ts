@@ -55,4 +55,9 @@ describe("appendFilesToPrompt", () => {
     // Only the one readable file contributes a fenced block (one open, one close).
     expect((out.match(/```/g) || []).length).toBe(2);
   });
+
+  test("a relative path resolves against the caller's directory, not this process's", () => {
+    const out = appendFilesToPrompt("go", ["a.txt"], dir);
+    expect(out).toBe("go\n\n--- a.txt ---\n```\nalpha contents\n```");
+  });
 });

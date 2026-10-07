@@ -40,6 +40,26 @@ Claude Code treats a base URL as Anthropic's own API only when told to. To give 
 
 ---
 
+## Serve the MCP tools to every session
+
+```bash
+claudish daemon --port 8787 --mcp-port 8788
+```
+
+With `--mcp-port`, claudish also serves its [MCP tools](mcp-server.md) over HTTP, one server for every session, background and interactive alike, in place of a `claudish --mcp` per session. Declare it where you would the stdio server:
+
+```json
+{
+  "mcpServers": {
+    "claudish": { "type": "http", "url": "http://127.0.0.1:8788/mcp" }
+  }
+}
+```
+
+Each tool call runs in the calling session's working directory, which Claude Code reports as the session's root. What the tools start, `create_session` sessions and `team` runs, belongs to the daemon: any session can list, read and cancel it, and stopping the daemon stops it all. Provider keys come from the daemon's environment. Channel notifications reach only a stdio server's session, so over HTTP poll with `get_output` and `list_sessions`.
+
+---
+
 ## What claudish does with the supervisor
 
 - **Keeps it up.** It runs with `--origin service`. A supervisor Claude Code starts on demand exits once nothing is attached to it; this one does not, and whenever it exits on its own, claudish starts it again one second later, the policy of the unit `claude daemon install` writes for it (`Restart=always`, `RestartSec=1`). The proxy stays up throughout. A supervisor that lost its lock to one a client started into the gap of a restart comes back, finds that one holding the lock, and takes over its sessions.

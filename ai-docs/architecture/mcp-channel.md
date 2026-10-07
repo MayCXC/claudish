@@ -10,6 +10,8 @@ The MCP server supports a channel mode that enables async model sessions with pu
 
 Uses the low-level `Server` class (not `McpServer`) from `@modelcontextprotocol/sdk/server/index.js` to declare `experimental: { 'claude/channel': {} }` capability. The SDK's `assertNotificationCapability()` has no default case — custom notification methods like `notifications/claude/channel` pass through.
 
+Two transports serve one tool surface (`createRuntime`, `createServer`): stdio (`claudish --mcp`), a server per session in the session's own directory, and Streamable HTTP (`claudish daemon --mcp-port`), one server for every session, each call run in the directory its client lists as a root. Channel frames are a stdio server's alone, since Claude Code takes them from a channel server it starts itself. The HTTP server's sessions, directories and shared state: [daemon-mode.md](daemon-mode.md), "The MCP server".
+
 ## Components (`packages/cli/src/channel/`)
 
 - **SessionManager** — the channel's policy and records: creates sessions, owns the queue of
@@ -204,7 +206,9 @@ pane cannot inherit the host's identity either.
 its `pid` equals `hostPid` and the id is well formed. Only when no record can be read does it
 fall back to `CLAUDE_CODE_SESSION_ID` (ignored under `CLAUDE_CODE_CHILD_SESSION`); with
 neither, the key is absent. One file read: no transcript search, no polling, no delay.
-`meta.json` carries the same key with the same value exactly when `spawn.json` does.
+`meta.json` carries the same key with the same value exactly when `spawn.json` does. A server
+answering over HTTP records no key at all, since no client launched it
+([daemon-mode.md](daemon-mode.md), "The MCP server").
 
 Why the host record, measured on Claude Code 2.1.290 in live interactive sessions
 (`madbench --manual`, 2026-10-06):

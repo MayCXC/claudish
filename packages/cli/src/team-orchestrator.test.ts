@@ -421,6 +421,16 @@ describe("team-orchestrator", () => {
       expect(typeof result).toBe("string");
       expect(result.startsWith(process.cwd())).toBe(true);
     });
+
+    it("resolves a relative path inside the caller's directory and contains it there", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+      const callerDir = join(tmpdir(), "claudish-caller-dir");
+
+      expect(validateSessionPath("runs/review", callerDir)).toBe(join(callerDir, "runs/review"));
+      expect(() => validateSessionPath("../elsewhere", callerDir)).toThrow(
+        "Session path must be within current directory: ../elsewhere"
+      );
+    });
   });
 
   // ── FR6: getStatus ────────────────────────────────────────────────────────

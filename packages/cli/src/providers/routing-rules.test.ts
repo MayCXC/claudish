@@ -43,11 +43,13 @@ import {
   buildRoutingChain,
   describeRouteExplanation,
   explainRoute,
+  loadRoutingRuleSources,
   loadRoutingRules,
   matchRoutingRule,
   matchRoutingRuleKey,
   normalizeGlmSlug,
   route,
+  routeIn,
   routingRuleProblems,
   toRoutePlan,
   validateRoutingRulesAgainstProviders,
@@ -1233,6 +1235,39 @@ describe("route() reads the resolved defaultProvider only without overrides", ()
       if (priorOpGuard === undefined) delete process.env.CLAUDISH_DISABLE_OP;
       else process.env.CLAUDISH_DISABLE_OP = priorOpGuard;
       credentials.invalidate();
+    }
+  });
+});
+
+describe("routeIn() decides with a directory's project rules", () => {
+  test("a rule in the .claudish.json found from the directory decides the chain", async () => {
+    const project = mkdtempSync(join(tmpdir(), "claudish-route-in-"));
+    try {
+      mkdirSync(join(project, ".git"));
+      mkdirSync(join(project, "sub"));
+      writeFileSync(
+        join(project, ".claudish.json"),
+        JSON.stringify({ routing: { "zzz-route-in-model": ["ollama@llama3.2"] } })
+      );
+      const cwd = join(project, "sub");
+      expect(loadRoutingRuleSources(cwd).localRules).toEqual({
+        "zzz-route-in-model": ["ollama@llama3.2"],
+      });
+      // Credentialed or not, the chain is the rule's, so the plan names its provider.
+      const plan = await routeIn(cwd)("zzz-route-in-model");
+      expect(plan.kind === "ok" ? plan.primary.provider : plan.reason).toContain("ollama");
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  test("a directory with no project config contributes no rules", () => {
+    const empty = mkdtempSync(join(tmpdir(), "claudish-route-in-"));
+    try {
+      mkdirSync(join(empty, ".git"));
+      expect(loadRoutingRuleSources(empty).localRules).toEqual({});
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
     }
   });
 });

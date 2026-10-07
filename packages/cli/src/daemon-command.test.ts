@@ -54,6 +54,26 @@ describe("parseDaemonArgs", () => {
     expect(() => parseDaemonArgs(["--port"])).toThrow("(got nothing)");
   });
 
+  test("takes the MCP server's port beside the proxy's", () => {
+    expect(parseDaemonArgs(["--port", "8787", "--mcp-port", "8788"])).toEqual({
+      port: 8787,
+      mcpPort: 8788,
+      supervisorArgs: [],
+    });
+  });
+
+  test.each([["0"], ["65536"], ["abc"]])("rejects the MCP port %s", (value) => {
+    expect(() => parseDaemonArgs(["--port", "8787", "--mcp-port", value])).toThrow(
+      "--mcp-port must be an integer 1-65535"
+    );
+  });
+
+  test("rejects the MCP server on the proxy's port", () => {
+    expect(() => parseDaemonArgs(["--port", "8787", "--mcp-port", "8787"])).toThrow(
+      "--mcp-port must differ from --port"
+    );
+  });
+
   test("rejects an option of claude daemon run given before --", () => {
     expect(() => parseDaemonArgs(["--port", "1", "--json-path", "x"])).toThrow(
       "unknown argument --json-path; options for claude daemon run go after --"

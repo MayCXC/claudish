@@ -144,6 +144,58 @@ ECONNREFUSED. Started again, a service supervisor finds the transient holding th
 to yield and adopts its sessions, the measurement above, so the race settles itself and the
 proxy has no reason to follow the supervisor down.
 
+## The MCP server
+
+With `--mcp-port`, the daemon serves claudish's MCP tools over Streamable HTTP at `/mcp` on
+127.0.0.1 (`startMcpHttpServer`), one server for every session, which declares
+`"claudish": { "type": "http", "url": "http://127.0.0.1:<port>/mcp" }` in place of
+`claudish --mcp`. It listens before the supervisor starts, because a session connects to its MCP
+servers as it starts, the supervisor's pre-started one included. Measured on Claude Code 2.1.286
+against a probe server:
+
+- **The caller's directory comes from its roots.** A stdio server's working directory is its
+  session's, since the harness starts it there; a server shared by every session has none to
+  lend. Claude Code declares the `roots` capability and answers `roots/list` with the session's
+  working directory, asked here on the tool call's own stream, so each call runs in it: the
+  `ToolCallContext.workingDirectory` its paths, children and routing rules resolve against. A
+  client that declares no roots leaves the daemon's directory.
+- **A session ends when its client's standalone stream does.** Claude Code never ends a session
+  itself: its bundle carries the SDK's DELETE (`terminateSession`) with no call site, and a
+  session that exits drops its streams and sends nothing. The server keeps a session while its
+  client holds the GET it opens for server messages, and `SESSION_STREAM_GRACE_MS` after the last
+  one ends, 30 s, the SDK client's longest reconnection delay. A client whose session is gone is
+  answered 404 with the transport's own `Session not found`, and Claude Code starts another ("MCP
+  session expired ... triggering reconnection").
+- **What the tools start belongs to the daemon.** Any session lists, reads and cancels the channel
+  sessions and team runs any other started; they end on completion, at their own timeout, on a
+  cancel, or with the daemon, which stops them all. A client's session ending stops none of them,
+  since it says only that the client's stream is gone. Routing proxies are one per working
+  directory, each with that directory's project rules.
+- **The daemon reaps the panes before it exits.** Channel sessions and team slots are panes
+  ([pane-session.md](pane-session.md)). `startMcpHttpServer` installs the pane shutdown hooks
+  before any pane exists, as the stdio server does, but without their exit: a signal settles every
+  run and session CANCELLED, so their records end, and reaps the panes, while the daemon goes on
+  stopping its supervisor. Once the supervisor has stopped, closing the MCP server runs the same
+  two steps and waits for them, and only then does the proxy shut and the daemon exit.
+- **No parent conversation.** A channel session or team run started over HTTP carries no
+  `parentClaudeSessionId`. A stdio server reads it from the session record Claude Code keeps for
+  the process that launched the server, else from the server's own `CLAUDE_CODE_SESSION_ID`
+  (`parent-session.ts`). No HTTP client launched the daemon, so both would describe whoever
+  started it rather than the session calling, and the field is absent rather than wrong
+  (`ToolCallContext.parentSession`).
+- **No channel frames.** Claude Code takes channel events from a channel server it starts itself
+  over stdio, under `--channels`, so over HTTP the capability is not declared and the channel
+  tools answer without frames.
+- **Long calls.** Claude Code aborts a silent call to an HTTP server after 5 minutes rather than
+  stdio's 30 ([mcp-channel.md](mcp-channel.md)); the tools with `heartbeat` refresh that window
+  every 10 s. The listener lifts Bun's idle timeout for every MCP request, since a tool call
+  streams for as long as it runs and a standalone stream carries nothing for most of its life.
+- **Local only.** It binds 127.0.0.1 and checks Host and Origin against its own addresses, as
+  the specification asks of a local server
+  ([transports, security warning](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#security-warning)).
+- **Keys from the daemon.** Provider keys come from the daemon's environment, which has no
+  per-session counterpart of a stdio server's `env` block or of the `.env` in its directory.
+
 ## Exit codes
 
 The supervisor's last code when the start limit ends the command; 1 when no runnable binary was
