@@ -6,16 +6,28 @@
  * Routes through the same proxy engine as the CLI — same auto-routing, fallback chains,
  * custom routing rules, and provider transports.
  *
- * Run with: claudish --mcp (stdio transport)
+ * Run with: claudish --mcp (stdio transport, one server per session), or as part of
+ * `claudish daemon --mcp-port <n>` (Streamable HTTP, one server shared by every session;
+ * `startMcpHttpServer`)
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import {
+  CallToolRequestSchema,
+  ListRootsResultSchema,
+  ListToolsRequestSchema,
+  RootsListChangedNotificationSchema,
+  type ServerNotification,
+  type ServerRequest,
+} from "@modelcontextprotocol/sdk/types.js";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
@@ -54,6 +66,7 @@ import {
   contractMeta,
   ensureSwept,
   installPaneShutdownHooks,
+  reapAllPanes,
   sockRootFor,
 } from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
@@ -63,7 +76,7 @@ import { isLocalProviderName } from "./providers/model-parser.js";
 import { NATIVE_NOT_PROBED, nativeRouteFor } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
 import { isReadyState, probeLink } from "./providers/probe-live.js";
-import { route } from "./providers/routing-rules.js";
+import { type route, routeIn } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
 import { nativeShortcutForVendor, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
@@ -166,6 +179,22 @@ interface ToolCallContext {
    * starts a child process stops it on this signal.
    */
   signal: AbortSignal;
+  /**
+   * The directory the calling session works in. Paths a tool is given resolve
+   * against it, the children it starts run in it, and the routes it decides come
+   * from that directory's project rules. On stdio it is this process's working
+   * directory, the session's own, since the harness starts the server there; over
+   * HTTP it is the first root the client lists (`readRootsDirectory`).
+   */
+  workingDirectory: string;
+  /**
+   * The Claude Code conversation that made the call, recorded as a run's
+   * `parentClaudeSessionId`. On stdio it is `parentSessionForCall`'s read, since the
+   * harness that started the server is the caller. Over HTTP it is `undefined`: no
+   * client started the server, so the host session record and the environment that
+   * read consults describe whoever launched it, not the session calling.
+   */
+  parentSession: () => Promise<string | undefined>;
 }
 
 interface ToolDefinition {
@@ -240,34 +269,33 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
   }
 }
 
-// ─── Lazy Proxy Singleton ────────────────────────────────────────────────────
-// The proxy runs the same routing engine as the CLI: auto-route, fallback chains,
+// ─── Lazy Proxies ────────────────────────────────────────────────────────────
+// A proxy runs the same routing engine as the CLI: auto-route, fallback chains,
 // custom routing rules, catalog resolution, and all direct provider transports.
-// It's started once on first use and reused for all subsequent MCP tool calls.
+// It reads its project's routing rules once, when it starts, so there is one per
+// working directory that calls a routing tool, started on that directory's first
+// call and reused for every later one from it.
 
-let proxyInstance: ProxyServer | null = null;
-let proxyStarting: Promise<ProxyServer> | null = null;
+const proxies = new Map<string, Promise<ProxyServer>>();
 
-async function getProxy(): Promise<ProxyServer> {
-  if (proxyInstance) return proxyInstance;
-  if (proxyStarting) return proxyStarting;
-
-  proxyStarting = (async () => {
-    const port = await findAvailablePort(10000, 19999);
-    const proxy = await createProxyServer(
-      port,
-      process.env.OPENROUTER_API_KEY,
-      undefined, // no default model — each call specifies its own
-      false, // not monitor mode
-      process.env.ANTHROPIC_API_KEY,
-      undefined, // no model map
-      { quiet: true, hostMode: "mcp" }
-    );
-    proxyInstance = proxy;
-    return proxy;
-  })();
-
-  return proxyStarting;
+function getProxy(workingDirectory: string): Promise<ProxyServer> {
+  let proxy = proxies.get(workingDirectory);
+  if (!proxy) {
+    proxy = (async () => {
+      const port = await findAvailablePort(10000, 19999);
+      return createProxyServer(
+        port,
+        process.env.OPENROUTER_API_KEY,
+        undefined, // no default model — each call specifies its own
+        false, // not monitor mode
+        process.env.ANTHROPIC_API_KEY,
+        undefined, // no model map
+        { quiet: true, hostMode: "mcp", projectDirectory: workingDirectory }
+      );
+    })();
+    proxies.set(workingDirectory, proxy);
+  }
+  return proxy;
 }
 
 /** Parse Anthropic SSE stream and extract text content + usage */
@@ -311,16 +339,21 @@ export function parseAnthropicSse(raw: string): {
 /**
  * Append the contents of local files to a prompt as labeled fenced blocks.
  *
- * Paths resolve against the process working directory. An unreadable or missing
- * file does not fail the call: it is reported inline as a short warning line so
- * the model still sees which file was requested, and the readable files are
- * appended regardless. Returns the prompt unchanged when no files are given.
+ * Paths resolve against `cwd`, the calling session's working directory. An
+ * unreadable or missing file does not fail the call: it is reported inline as a
+ * short warning line so the model still sees which file was requested, and the
+ * readable files are appended regardless. Returns the prompt unchanged when no
+ * files are given.
  */
-export function appendFilesToPrompt(prompt: string, files: string[] | undefined): string {
+export function appendFilesToPrompt(
+  prompt: string,
+  files: string[] | undefined,
+  cwd: string = process.cwd()
+): string {
   if (!Array.isArray(files) || files.length === 0) return prompt;
   const blocks = files.map((file) => {
     try {
-      const contents = readFileSync(file, "utf-8");
+      const contents = readFileSync(resolve(cwd, file), "utf-8");
       return `--- ${file} ---\n\`\`\`\n${contents}\n\`\`\``;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -341,9 +374,10 @@ export function appendFilesToPrompt(prompt: string, files: string[] | undefined)
 export async function runPromptViaProxy(
   model: string,
   prompt: string,
-  systemPrompt?: string
+  systemPrompt?: string,
+  workingDirectory: string = process.cwd()
 ): Promise<RunPromptResult> {
-  const proxy = await getProxy();
+  const proxy = await getProxy(workingDirectory);
 
   // Build Anthropic Messages API request
   const body: Record<string, unknown> = {
@@ -386,19 +420,21 @@ export async function runPromptViaProxy(
  * `sonnet`, `haiku`, `internal`, ...) runs as one Claude Code print-mode call on the
  * user's own Claude Code login, because the proxy's native route forwards the
  * caller's credential and an MCP call has none. Every other model, including the
- * explicit `anthropic@claude-*` (metered), goes through the in-process proxy. The
+ * explicit `anthropic@claude-*` (metered), goes through the in-process proxy, the
+ * one for `workingDirectory`, so it routes with that directory's project rules. The
  * ORIGINAL model string is passed on; claudish's CLI owns alias normalisation.
  */
 export async function runPrompt(
   model: string,
   prompt: string,
   systemPrompt?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  workingDirectory: string = process.cwd()
 ): Promise<RunPromptResult> {
   if (nativeRouteFor(model) !== null) {
     return runPromptViaClaudeCode(model, prompt, systemPrompt, { signal });
   }
-  return runPromptViaProxy(model, prompt, systemPrompt);
+  return runPromptViaProxy(model, prompt, systemPrompt, workingDirectory);
 }
 
 /** `run_prompt`'s success text: the answer, then a footer of token and auth lines. */
@@ -787,11 +823,11 @@ function contractErrorAnswer(e: unknown): ToolAnswer {
   };
 }
 
-function contractPath(raw: unknown, mode: string): string {
+function contractPath(raw: unknown, mode: string, cwd: string): string {
   if (typeof raw !== "string" || !raw)
     throw new ContractErrorException("invalid_args", `'path' is required for mode '${mode}'`);
   try {
-    return validateSessionPath(raw);
+    return validateSessionPath(raw, cwd);
   } catch (e) {
     throw new ContractErrorException("invalid_args", e instanceof Error ? e.message : String(e));
   }
@@ -874,17 +910,19 @@ export function teamStatusAnswer(path: string, runId?: string): Record<string, u
 
 /**
  * `list` / `status` / `cancel` / `capture` / `resize`: memory reads and the two pane verbs,
- * JSON answers, ContractError errors.
+ * JSON answers, ContractError errors. `path` resolves against `workingDirectory`, the
+ * calling session's, and stays within it.
  */
 export async function teamContractVerb(
   mode: "list" | "status" | "cancel" | "capture" | "resize",
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  workingDirectory: string = process.cwd()
 ): Promise<ToolAnswer> {
   try {
     if (mode === "list") return contractAnswer(listTeamRuns());
     // Every argument's TYPE is checked before the run is looked up: a wrongly typed argument
     // is the caller's error whether or not the run exists (§8 E).
-    const path = contractPath(args.path, mode);
+    const path = contractPath(args.path, mode, workingDirectory);
     const runId = optionalString(args.run_id, "run_id");
     const slot = optionalString(args.slot, "slot");
     const since = optionalInteger(args.since_seq, "since_seq");
@@ -995,9 +1033,14 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       try {
         const result = await runPrompt(
           args.model as string,
-          appendFilesToPrompt(args.prompt as string, args.files as string[] | undefined),
+          appendFilesToPrompt(
+            args.prompt as string,
+            args.files as string[] | undefined,
+            ctx.workingDirectory
+          ),
           args.system_prompt as string | undefined,
-          ctx.signal
+          ctx.signal,
+          ctx.workingDirectory
         );
         return { content: [{ type: "text" as const, text: formatRunPromptResult(result) }] };
       } catch (error) {
@@ -1206,7 +1249,11 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       // `prompt` stays the user's text for the comparison header and progress
       // notes; the file-augmented form is what each model actually receives.
       const prompt = args.prompt as string;
-      const promptWithFiles = appendFilesToPrompt(prompt, args.files as string[] | undefined);
+      const promptWithFiles = appendFilesToPrompt(
+        prompt,
+        args.files as string[] | undefined,
+        ctx.workingDirectory
+      );
       const systemPrompt = args.system_prompt as string | undefined;
 
       // Ordering: ARGUMENT order, deliberately. The caller chose this sequence
@@ -1220,7 +1267,13 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       }> = [];
       for (const model of modelIds) {
         try {
-          const result = await runPrompt(model, promptWithFiles, systemPrompt, ctx.signal);
+          const result = await runPrompt(
+            model,
+            promptWithFiles,
+            systemPrompt,
+            ctx.signal,
+            ctx.workingDirectory
+          );
           results.push({ model, response: result.content, tokens: result.usage });
         } catch (error) {
           results.push({
@@ -1314,7 +1367,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       // never are (see the loop), so an all-native model list must neither wait on
       // proxy startup nor throw from it.
       const needsProxy = doProbe && models.some((m) => nativeRouteFor(m) === null);
-      const proxy = needsProxy ? await getProxy() : null;
+      const proxy = needsProxy ? await getProxy(ctx.workingDirectory) : null;
+      // The rules a real run from the caller's directory would route with.
+      const routeFromCaller = routeIn(ctx.workingDirectory);
 
       // Register runtime providers before ANY `route()` call below.
       //
@@ -1364,7 +1419,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
 
         let plan: Awaited<ReturnType<typeof route>>;
         try {
-          plan = await route(model);
+          plan = await routeFromCaller(model);
         } catch (err) {
           failedModels.push(model);
           rows.push(
@@ -1643,7 +1698,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         mode === "capture" ||
         mode === "resize"
       ) {
-        return teamContractVerb(mode, args);
+        return teamContractVerb(mode, args, ctx.workingDirectory);
       }
       try {
         if (mode !== "run" && mode !== "judge" && mode !== "run-and-judge")
@@ -1664,19 +1719,23 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
               "rendered verbatim in the caller's terminal."
           );
         }
-        const input = inputFile !== undefined ? readTeamInputFile(inputFile) : inlineInput;
+        const input =
+          inputFile !== undefined
+            ? readTeamInputFile(inputFile, ctx.workingDirectory)
+            : inlineInput;
         const requirePattern = args.require_pattern as string | undefined;
         const minOutputBytes = args.min_output_bytes as number | undefined;
         const childFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
         // No agent probe here: the interactive child refuses an unknown --agent itself,
         // before any model request, and that slot is FAILED agent_rejected (D11).
 
-        const resolved = validateSessionPath(path);
+        const resolved = validateSessionPath(path, ctx.workingDirectory);
 
         const runOpts = {
           requirePattern,
           minOutputBytes,
           claudeFlags: childFlags,
+          cwd: ctx.workingDirectory,
           onProgress: (u: { phase: "running" | "settled" }) => {
             // A state change is real news, so refresh the client's idle timer at
             // that moment as well as on the periodic tick. Short phase string only:
@@ -1712,9 +1771,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             // is how an observer outside this process learns the run ended.
             // Written BEFORE any pane exists; a throw here fails the call with
             // nothing started.
-            const parentClaudeSessionId = await parentSessionForCall({
-              hostPid: sessionManager.hostPid,
-            });
+            const parentClaudeSessionId = await ctx.parentSession();
             const monitorRecord = sessionManager.recordTeamRun({
               teamPath: resolved,
               slots: models.length,
@@ -1786,7 +1843,11 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             };
           }
           case "judge": {
-            const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
+            const verdict = await judgeResponses(resolved, {
+              judges,
+              claudeFlags: childFlags,
+              cwd: ctx.workingDirectory,
+            });
             return { content: [{ type: "text" as const, text: JSON.stringify(verdict, null, 2) }] };
           }
           case "run-and-judge": {
@@ -1802,7 +1863,11 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             const handle = await startModels(resolved, runOpts);
             await handle.done;
             const run = teamRunRow(resolved, handle.runId);
-            const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
+            const verdict = await judgeResponses(resolved, {
+              judges,
+              claudeFlags: childFlags,
+              cwd: ctx.workingDirectory,
+            });
             return {
               content: [
                 {
@@ -2025,13 +2090,14 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         },
         work_dir: {
           type: "string",
-          description: "Working directory for the session (default: current directory)",
+          description:
+            "Working directory for the session, relative to the caller's (default: the caller's working directory)",
         },
       },
       required: ["model"],
     },
     group: "session",
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       try {
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
         // Refusals first, before any credential work: reserved or positional flags, then
@@ -2049,23 +2115,22 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         // which the child inherits; the returned plan pins the bare name to an
         // explicit "provider@model" spec so the child never re-walks the chain
         // and asks 1Password about candidates the parent short-circuited past.
-        //
-        // Pinning is SKIPPED for a work_dir outside this process's cwd: route()
-        // reads project-local config relative to process.cwd(), so the parent
-        // would decide with the wrong project's rules. process.chdir() is not
-        // an option — it is process-global and races concurrent calls.
+        // The route is decided with the project rules of the directory the
+        // child runs in, the ones the child would read itself.
         const requestedModel = args.model as string;
-        const workDir = args.work_dir as string | undefined;
+        const workDir =
+          args.work_dir === undefined
+            ? ctx.workingDirectory
+            : resolve(ctx.workingDirectory, args.work_dir as string);
 
         const plan = await prehydrateCredentialsForSpawn([requestedModel], {
-          pin: workDir === undefined || resolve(workDir) === process.cwd(),
+          projectDirectory: workDir,
         });
 
         // The conversation live in the calling window, from the host's session
-        // record: one read at call time, no wait. See mcp-session/parent-session.ts.
-        const parentClaudeSessionId = await parentSessionForCall({
-          hostPid: sessionManager.hostPid,
-        });
+        // record on stdio: one read at call time, no wait. See
+        // ToolCallContext.parentSession and mcp-session/parent-session.ts.
+        const parentClaudeSessionId = await ctx.parentSession();
 
         // Reserves the pane, writes prompt.md and spawn.json, then starts the pane; no
         // boot wait.
@@ -2438,25 +2503,26 @@ export function mcpDebugLogEnabled(
   return fromEnv === "1" || fromEnv === "true";
 }
 
-async function main() {
-  // FIRST, before anything can start loadHooksOnce(): descriptor 1 belongs to
-  // the JSON-RPC writer alone. Every other stdout route — Bun's native
-  // console.log, process.stdout.write, fs.writeSync(1), Bun.write(Bun.stdout),
-  // an inheriting child — lands on stderr or in the debug log, so no hook
-  // output (and no stray write of claudish's own) can corrupt the protocol.
-  // Where libc cannot be bound, `active` is false, stdout is untouched, and the
-  // loader loads no user hook module in this process.
-  const iso: ProtocolStdout = isolateProtocolStdout();
+/**
+ * What every MCP client of this process shares: the tools and the session manager
+ * behind them, with the routing proxies and the live team runs the tools reach as
+ * module state. The stdio server answers its one client from it, the HTTP server
+ * (`startMcpHttpServer`) every client it has.
+ */
+interface McpRuntime {
+  toolMode: string;
+  /** Started inside a session a claudish owner started (`inMcpSession`). */
+  nested: boolean;
+  enabledTools: ToolDefinition[];
+  toolMap: Map<string, ToolDefinition>;
+  progressIntervalMs: number;
+  sessionManager: SessionManager;
+}
 
-  // The debug log is also where hook output and diverted stdout writes go.
-  if (mcpDebugLogEnabled(process.argv.slice(2), process.env)) initLogger(true, "debug", true);
-  if (!iso.active) log(`[mcp] protocol stdout not isolated: ${iso.reason ?? "unknown"}`);
+type ToolRequestExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
-  // Session hooks need the engine without a proxy, so loading starts now, in the
-  // background. The MCP server's own proxy (run_prompt, preflight) awaits the
-  // same memoised promise before it builds a handler.
-  void loadHooksOnce({ hostMode: "mcp" });
-
+/** The tools `CLAUDISH_MCP_TOOLS` and the nesting level enable, over one session manager. */
+function createRuntime(): McpRuntime {
   const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
   // Inside a session a claudish owner started, one level of nesting is the limit:
   // only the one-shot tools of NESTED_MCP_TOOL_NAMES, intersected with the groups
@@ -2467,23 +2533,11 @@ async function main() {
   const toolModeWarning = unknownToolModeWarning(toolMode);
   if (toolModeWarning) console.error(toolModeWarning);
 
-  // Tools only, for every tool mode. No `experimental: {"claude/channel": {}}`: the
-  // server pushes nothing; a host polls `list_sessions` and reads the records.
-  const server = new Server(
-    // `version.ts` is generated from packages/cli/package.json, so serverInfo names
-    // the release the host is actually talking to.
-    { name: "claudish", version: VERSION },
-    {
-      capabilities: { tools: {} },
-      instructions: nested ? NESTED_INSTRUCTIONS : INSTRUCTIONS,
-    }
-  );
-
   // Sessions are observed by polling (`list_sessions`, `get_output`) and through
   // their records on disk; nothing is pushed to the host.
   const sessionManager = new SessionManager();
 
-  // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
+  // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per runtime rather
   // than per call, so a long-lived session cannot change its behaviour mid-flight.
   const progressIntervalMs = resolveProgressIntervalMs();
 
@@ -2493,15 +2547,90 @@ async function main() {
   const enabledTools = allTools.filter(
     (t) => enabledGroups.has(t.group) && (!nested || nestedNames.includes(t.name))
   );
-  const toolMap = new Map(enabledTools.map((t) => [t.name, t]));
+  return {
+    toolMode,
+    nested,
+    enabledTools,
+    toolMap: new Map(enabledTools.map((t) => [t.name, t])),
+    progressIntervalMs,
+    sessionManager,
+  };
+}
 
-  console.error(
-    `[claudish] MCP server started (tools: ${nested ? "nested" : toolMode}, ${enabledTools.length} tools)`
+/**
+ * The calling session's working directory over HTTP, where this process's own is
+ * not the session's: the first `file:` root its client lists. Claude Code declares
+ * roots and lists the session's working directory (2.1.286, measured with a probe
+ * server); a client that declares none, or lists no `file:` root, leaves this
+ * process's. Asked on the tool call's own stream, which needs no standalone one.
+ * https://modelcontextprotocol.io/specification/2025-06-18/client/roots
+ */
+async function readRootsDirectory(server: Server, extra: ToolRequestExtra): Promise<string> {
+  if (!server.getClientCapabilities()?.roots) return process.cwd();
+  const { roots } = await extra.sendRequest({ method: "roots/list" }, ListRootsResultSchema);
+  const root = roots.find((r) => r.uri.startsWith("file:"));
+  return root ? fileURLToPath(root.uri) : process.cwd();
+}
+
+/**
+ * The SDK `Server` instance that answers one client, over the shared runtime. The
+ * SDK connects an instance to a single transport (`Protocol.connect`), so the stdio
+ * server has one and the HTTP server makes one for each client it has. Its tool
+ * calls run in the calling session's directory: on stdio this process's working
+ * directory, where the harness starts the server; over HTTP the client's root
+ * (`readRootsDirectory`), read on the first tool call and again after the client
+ * says its roots changed. The runs they start record the calling conversation on
+ * stdio alone (`ToolCallContext.parentSession`).
+ */
+function createServer(runtime: McpRuntime, directory: "process" | "roots"): Server {
+  // Tools only, for every tool mode. No `experimental: {"claude/channel": {}}`: the
+  // server pushes nothing; a host polls `list_sessions` and reads the records.
+  const server = new Server(
+    // `version.ts` is generated from packages/cli/package.json, so serverInfo names
+    // the release the host is actually talking to.
+    { name: "claudish", version: VERSION },
+    {
+      capabilities: { tools: {} },
+      instructions: runtime.nested ? NESTED_INSTRUCTIONS : INSTRUCTIONS,
+    }
   );
+
+  let rootsDirectory: Promise<string> | undefined;
+  if (directory === "roots") {
+    server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
+      rootsDirectory = undefined;
+    });
+  }
+  // A tool never runs in a directory it was not given: one the client should name
+  // and could not is the call's error answer, and the next call asks again.
+  const workingDirectoryFor = async (extra: ToolRequestExtra): Promise<string | ToolAnswer> => {
+    if (directory === "process") return process.cwd();
+    rootsDirectory ??= readRootsDirectory(server, extra).catch((error: unknown) => {
+      rootsDirectory = undefined;
+      throw error;
+    });
+    try {
+      return await rootsDirectory;
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: could not read the calling session's working directory (roots/list): ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  };
+  const parentSession = (): Promise<string | undefined> =>
+    directory === "process"
+      ? parentSessionForCall({ hostPid: runtime.sessionManager.hostPid })
+      : Promise.resolve(undefined);
 
   // Register ListTools handler
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: enabledTools.map((t) => ({
+    tools: runtime.enabledTools.map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
@@ -2530,7 +2659,7 @@ async function main() {
   // never started.
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
-    const tool = toolMap.get(name);
+    const tool = runtime.toolMap.get(name);
     if (!tool) {
       return {
         content: [{ type: "text" as const, text: `Error: Unknown tool "${name}"` }],
@@ -2538,11 +2667,14 @@ async function main() {
       };
     }
 
+    const workingDirectory = await workingDirectoryFor(extra);
+    if (typeof workingDirectory !== "string") return workingDirectory;
+
     const heartbeat: HeartbeatHandle = tool.heartbeat
       ? startHeartbeat({
           token: extra._meta?.progressToken,
           label: name,
-          intervalMs: progressIntervalMs,
+          intervalMs: runtime.progressIntervalMs,
           send: (frame) =>
             extra.sendNotification({ method: "notifications/progress", params: frame }),
         })
@@ -2550,6 +2682,8 @@ async function main() {
     const ctx: ToolCallContext = {
       reportProgress: (message) => heartbeat.tick(message),
       signal: extra.signal,
+      workingDirectory,
+      parentSession,
     };
 
     try {
@@ -2569,17 +2703,59 @@ async function main() {
     }
   });
 
+  return server;
+}
+
+/**
+ * Settle every team run and session the runtime's tools started CANCELLED, so their
+ * records end (`meta.json`, the closing wait line). Both outlive the call that started
+ * them: a session runs until it ends, and a team `run` returns before its models
+ * finish. The panes behind them are reaped after this.
+ */
+async function shutdownRuntime(runtime: McpRuntime): Promise<void> {
+  // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
+  // their process groups here, or they outlive the server.
+  stopAllClaudeCodePrintChildren();
+  await Promise.allSettled([shutdownAllTeamRuns(), runtime.sessionManager.shutdownAll()]);
+}
+
+async function main() {
+  // FIRST, before anything can start loadHooksOnce(): descriptor 1 belongs to
+  // the JSON-RPC writer alone. Every other stdout route — Bun's native
+  // console.log, process.stdout.write, fs.writeSync(1), Bun.write(Bun.stdout),
+  // an inheriting child — lands on stderr or in the debug log, so no hook
+  // output (and no stray write of claudish's own) can corrupt the protocol.
+  // Where libc cannot be bound, `active` is false, stdout is untouched, and the
+  // loader loads no user hook module in this process.
+  const iso: ProtocolStdout = isolateProtocolStdout();
+
+  // The debug log is also where hook output and diverted stdout writes go.
+  if (mcpDebugLogEnabled(process.argv.slice(2), process.env)) initLogger(true, "debug", true);
+  if (!iso.active) log(`[mcp] protocol stdout not isolated: ${iso.reason ?? "unknown"}`);
+
+  // Session hooks need the engine without a proxy, so loading starts now, in the
+  // background. The MCP server's own proxy (run_prompt, preflight) awaits the
+  // same memoised promise before it builds a handler.
+  void loadHooksOnce({ hostMode: "mcp" });
+
+  const runtime = createRuntime();
+  const server = createServer(runtime, "process");
+
+  console.error(
+    `[claudish] MCP server started (tools: ${runtime.nested ? "nested" : runtime.toolMode}, ${runtime.enabledTools.length} tools)`
+  );
+
   // Connect via stdio transport, writing through the protocol writer (the real
   // stdout's private descriptor when isolation is active).
   const transport = new StdioServerTransport(process.stdin, iso.protocolOut);
   await server.connect(transport);
-  installMcpShutdown(sessionManager);
+  installMcpShutdown(runtime);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
   // after an identity check. Asynchronous, and once per root per process — the first
   // pane's own sweep (ensureSwept in startPaneSession) is this one, not a second `ps`.
   // A nested server registers no session tools and never spawns a pane, so it has
   // nothing to sweep.
-  if (!nested) void ensureSwept(sockRootFor()).catch(() => undefined);
+  if (!runtime.nested) void ensureSwept(sockRootFor()).catch(() => undefined);
 }
 
 /**
@@ -2590,16 +2766,178 @@ async function main() {
  * replace these options. A SIGKILL of this process ends no record; the per-pane
  * watchers still remove the panes.
  */
-function installMcpShutdown(sessionManager: SessionManager): void {
-  const before = async (): Promise<void> => {
-    // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
-    // their process groups here, or they outlive the server.
-    stopAllClaudeCodePrintChildren();
-    await Promise.allSettled([shutdownAllTeamRuns(), sessionManager.shutdownAll()]);
-  };
+function installMcpShutdown(runtime: McpRuntime): void {
   // The stdio transport closes when stdin does, so stdin's `end`/`close` is the
   // transport-close hook too.
-  installPaneShutdownHooks({ stdin: true, before });
+  installPaneShutdownHooks({ stdin: true, before: () => shutdownRuntime(runtime) });
+}
+
+// ─── Streamable HTTP ─────────────────────────────────────────────────────────
+
+/** The MCP endpoint's path on the HTTP listener, the one the specification's examples use. */
+export const MCP_HTTP_PATH = "/mcp";
+
+/**
+ * How long a client's MCP session outlives the end of its standalone stream, the
+ * GET it holds open for messages from the server.
+ *
+ * Claude Code never ends a session itself: 2.1.286 carries the SDK's DELETE
+ * (`terminateSession`) and never calls it, and a session that exits drops its
+ * streams and nothing else (measured with a probe server), so that end is the one
+ * sign a client has gone. A live client whose stream dropped reopens it within the
+ * SDK client's reconnection delay, at most `maxReconnectionDelay` (30 s) of
+ * `DEFAULT_STREAMABLE_HTTP_RECONNECTION_OPTIONS` in
+ * `@modelcontextprotocol/sdk/client/streamableHttp.js`, which does not export it.
+ * A client whose session ended is answered 404 and starts another, as the
+ * specification's session management has it; Claude Code does ("MCP session
+ * expired ... triggering reconnection").
+ * https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#session-management
+ */
+export const SESSION_STREAM_GRACE_MS = 30_000;
+
+export interface McpHttpServer {
+  /** The MCP endpoint, for a client's `"type": "http"` server entry. */
+  url: string;
+  port: number;
+  /** End every session, stop listening, and stop what the tools started. */
+  close(): Promise<void>;
+}
+
+interface HttpSession {
+  transport: WebStandardStreamableHTTPServerTransport;
+  openStreams: number;
+  reap: ReturnType<typeof setTimeout> | null;
+}
+
+/**
+ * Serve the MCP tools over Streamable HTTP on 127.0.0.1:`port` (0 picks one) to
+ * every client at once, from one listener and one runtime: each client gets an MCP
+ * session, with a transport and an SDK `Server` instance (`createServer`) of its own
+ * as the SDK's stateful example has them, each tool call run in the directory its
+ * client lists as a root, and what the tools start (sessions, team runs) shared by
+ * every client. Host and Origin are checked as the specification asks of a local
+ * server, against this listener's own addresses.
+ * https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http
+ * https://github.com/modelcontextprotocol/typescript-sdk#with-session-management
+ *
+ * The hook engine starts loading here, as the stdio server's does, so session hooks
+ * have it before the first pane, and under host mode `other`: mode `mcp` loads no
+ * user module without stdout isolation, which keeps hook output off a protocol on
+ * stdout, and this one is on HTTP.
+ *
+ * The process that starts it decides when to exit, so its pane shutdown hooks settle
+ * the records and reap the panes on a signal without exiting, and `close` runs the
+ * same two steps and waits for them. They are installed before any pane exists, as
+ * the stdio server's are, so `startPaneSession`'s own hooks, which exit at once, never
+ * apply.
+ */
+export async function startMcpHttpServer(
+  port: number,
+  options: { streamGraceMs?: number } = {}
+): Promise<McpHttpServer> {
+  void loadHooksOnce({ hostMode: "other" });
+  const runtime = createRuntime();
+  installPaneShutdownHooks({ exitAfter: false, before: () => shutdownRuntime(runtime) });
+  // As on stdio, a nested server spawns no pane and has nothing to sweep.
+  if (!runtime.nested) void ensureSwept(sockRootFor()).catch(() => undefined);
+  const graceMs = options.streamGraceMs ?? SESSION_STREAM_GRACE_MS;
+  const sessions = new Map<string, HttpSession>();
+
+  const forget = (id: string): HttpSession | undefined => {
+    const session = sessions.get(id);
+    if (!session) return undefined;
+    sessions.delete(id);
+    if (session.reap) clearTimeout(session.reap);
+    return session;
+  };
+
+  // Counted from the moment the transport answers a GET with an event stream, and
+  // given back when the client ends that request.
+  const holdStream = (id: string, session: HttpSession, signal: AbortSignal) => {
+    session.openStreams++;
+    if (session.reap) {
+      clearTimeout(session.reap);
+      session.reap = null;
+    }
+    signal.addEventListener(
+      "abort",
+      () => {
+        session.openStreams--;
+        if (session.openStreams > 0 || sessions.get(id) !== session) return;
+        session.reap = setTimeout(() => {
+          if (forget(id)) void session.transport.close();
+        }, graceMs);
+      },
+      { once: true }
+    );
+  };
+
+  const startSession = async (req: Request, boundPort: number): Promise<Response> => {
+    const transport: WebStandardStreamableHTTPServerTransport =
+      new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        enableDnsRebindingProtection: true,
+        allowedHosts: [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`],
+        allowedOrigins: [`http://127.0.0.1:${boundPort}`, `http://localhost:${boundPort}`],
+        onsessioninitialized: (id) => {
+          sessions.set(id, { transport, openStreams: 0, reap: null });
+        },
+        // A DELETE: the transport closes itself after this.
+        onsessionclosed: (id) => {
+          forget(id);
+        },
+      });
+    await createServer(runtime, "roots").connect(transport);
+    // A request that is not an initialization is refused by the transport, and the
+    // pair is never registered.
+    return transport.handleRequest(req);
+  };
+
+  const listener = Bun.serve({
+    port,
+    hostname: "127.0.0.1",
+    async fetch(req, bun) {
+      if (new URL(req.url).pathname !== MCP_HTTP_PATH) {
+        return new Response("Not Found", { status: 404 });
+      }
+      // A tool call streams progress for as long as it runs, and a standalone
+      // stream carries nothing for most of its life; neither one is idle.
+      bun.timeout(req, 0);
+      const id = req.headers.get("mcp-session-id");
+      if (id === null) return startSession(req, bun.port ?? port);
+      const session = sessions.get(id);
+      if (!session) {
+        // The transport's own answer for a session it does not know.
+        return Response.json(
+          { jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null },
+          { status: 404 }
+        );
+      }
+      const response = await session.transport.handleRequest(req);
+      if (
+        req.method === "GET" &&
+        response.headers.get("content-type")?.startsWith("text/event-stream")
+      ) {
+        holdStream(id, session, req.signal);
+      }
+      return response;
+    },
+  });
+  const boundPort = listener.port ?? port;
+
+  return {
+    url: `http://127.0.0.1:${boundPort}${MCP_HTTP_PATH}`,
+    port: boundPort,
+    async close() {
+      listener.stop(true);
+      for (const id of [...sessions.keys()]) {
+        const session = forget(id);
+        await session?.transport.close().catch(() => {});
+      }
+      await shutdownRuntime(runtime);
+      await reapAllPanes("shutdown");
+    },
+  };
 }
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────

@@ -16,6 +16,8 @@ Uses the low-level `Server` class (not `McpServer`) from `@modelcontextprotocol/
 and `serverInfo.version` is `VERSION` from `version.ts` (generated from `packages/cli/package.json`;
 it said `9.0.0` until 10.7.0).
 
+Two transports serve one tool surface (`createRuntime`, `createServer`): stdio (`claudish --mcp`), a server per session in the session's own directory, and Streamable HTTP (`claudish daemon --mcp-port`), one server that every session shares, each call run in the directory its client lists as a root. The HTTP server's sessions, directories, hook engine and shared state: [daemon-mode.md](daemon-mode.md), "The MCP server".
+
 ## Components (`packages/cli/src/mcp-session/`)
 
 - **SessionManager** — the sessions' policy and records: creates sessions, owns the queue of
@@ -215,7 +217,9 @@ pane cannot inherit the host's identity either.
 its `pid` equals `hostPid` and the id is well formed. Only when no record can be read does it
 fall back to `CLAUDE_CODE_SESSION_ID` (ignored under `CLAUDE_CODE_CHILD_SESSION`); with
 neither, the key is absent. One file read: no transcript search, no polling, no delay.
-`meta.json` carries the same key with the same value exactly when `spawn.json` does.
+`meta.json` carries the same key with the same value exactly when `spawn.json` does. A server
+answering over HTTP records no key at all, since no client launched it
+([daemon-mode.md](daemon-mode.md), "The MCP server").
 
 Why the host record, measured on Claude Code 2.1.290 in live interactive sessions
 (`madbench --manual`, 2026-10-06):

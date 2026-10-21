@@ -59,4 +59,13 @@ describe("readTeamInputFile", () => {
 
     expect(readTeamInputFile(inputPath)).toBe(contents);
   });
+
+  test("reads a relative path from the caller's directory and contains it there", () => {
+    writeFileSync(join(fixtureDir, "brief.md"), "the brief", "utf-8");
+
+    expect(readTeamInputFile("brief.md", fixtureDir)).toBe("the brief");
+    expect(() => readTeamInputFile("../brief.md", fixtureDir)).toThrow(
+      "Input file must be within current directory: ../brief.md"
+    );
+  });
 });
