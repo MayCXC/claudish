@@ -12,7 +12,7 @@
  *   bun run scripts/generate-hooks-dts.ts --check  exit 1 if it is stale
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import ts from "typescript";
 
 const root = join(import.meta.dir, "..");
@@ -76,10 +76,14 @@ function ambient(dts: string): string {
 /**
  * Format with the repo's own biome, so the generated file passes `bun run lint`
  * as written (biome picks the quote style with fewer escapes, among others).
+ *
+ * The path is given relative to `root`, the directory biome runs in: biome
+ * ignores a file whose absolute path passes through a `node_modules` directory,
+ * which is where installing claudish as a git dependency builds it.
  */
 function biomeFormat(source: string): string {
   const bin = join(root, "node_modules/.bin/biome");
-  const proc = Bun.spawnSync([bin, "format", `--stdin-file-path=${outPath}`], {
+  const proc = Bun.spawnSync([bin, "format", `--stdin-file-path=${relative(root, outPath)}`], {
     cwd: root,
     stdin: new TextEncoder().encode(source),
   });
